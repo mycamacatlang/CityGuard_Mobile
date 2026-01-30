@@ -1,6 +1,10 @@
 import 'package:flutter/material.dart';
+import 'package:get/get.dart';
 import '../constants/app_colors.dart';
+import '../services/auth_service.dart';
+import '../data/schema_constants.dart';
 import '../widgets/bottom_nav.dart';
+import 'login_screen.dart';
 
 class AccountScreen extends StatefulWidget {
   const AccountScreen({super.key});
@@ -14,6 +18,31 @@ class _AccountScreenState extends State<AccountScreen> {
   final _lastNameController = TextEditingController();
   final _birthdayController = TextEditingController();
   String? _gender;
+  bool _loading = true;
+
+  @override
+  void initState() {
+    super.initState();
+    _loadProfile();
+  }
+
+  Future<void> _loadProfile() async {
+    final uid = AuthService.instance.currentUserId;
+    if (uid == null) {
+      setState(() => _loading = false);
+      return;
+    }
+    final profile = await AuthService.instance.getProfile(uid);
+    if (mounted) {
+      setState(() {
+        _firstNameController.text = profile?[Schema.firstName]?.toString() ?? '';
+        _lastNameController.text = profile?[Schema.lastName]?.toString() ?? '';
+        _birthdayController.text = profile?[Schema.birthday]?.toString() ?? '';
+        _gender = profile?[Schema.gender]?.toString();
+        _loading = false;
+      });
+    }
+  }
 
   @override
   void dispose() {
@@ -21,6 +50,27 @@ class _AccountScreenState extends State<AccountScreen> {
     _lastNameController.dispose();
     _birthdayController.dispose();
     super.dispose();
+  }
+
+  Future<void> _saveProfile() async {
+    final uid = AuthService.instance.currentUserId;
+    if (uid == null) return;
+    await AuthService.instance.updateProfile(uid, {
+      Schema.firstName: _firstNameController.text.trim(),
+      Schema.lastName: _lastNameController.text.trim(),
+      Schema.birthday: _birthdayController.text.trim(),
+      Schema.gender: _gender,
+    });
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Profile changes saved')),
+      );
+    }
+  }
+
+  void _logout() {
+    AuthService.instance.currentUserId = null;
+    Get.offAll(() => const LoginScreen());
   }
 
   Future<void> _pickDate() async {
@@ -62,14 +112,16 @@ class _AccountScreenState extends State<AccountScreen> {
         elevation: 0,
         title: const Text('CITY GUARD', style: TextStyle(fontWeight: FontWeight.bold)),
         actions: [
-          Padding(
-            padding: const EdgeInsets.only(right: 12.0),
-            child: Icon(Icons.logout, color: Colors.black), 
-          )
+          IconButton(
+            icon: const Icon(Icons.logout, color: Colors.white),
+            onPressed: _logout,
+          ),
         ],
       ),
       body: SafeArea(
-        child: Column(
+        child: _loading
+            ? const Center(child: CircularProgressIndicator(color: Colors.white))
+            : Column(
           children: [
             const SizedBox(height: 6),
             const Text(
@@ -166,11 +218,7 @@ class _AccountScreenState extends State<AccountScreen> {
 
                     // Save button 
                     ElevatedButton(
-                      onPressed: () {
-                        ScaffoldMessenger.of(context).showSnackBar(
-                          const SnackBar(content: Text('Profile changes saved')),
-                        );
-                      },
+                      onPressed: _loading ? null : _saveProfile,
                       style: ElevatedButton.styleFrom(
                         backgroundColor: AppColors.primary,
                         foregroundColor: Colors.white,

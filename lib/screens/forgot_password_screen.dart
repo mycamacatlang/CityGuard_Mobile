@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:get/get.dart';
+import '../services/auth_service.dart';
 
 class ForgotPasswordScreen extends StatefulWidget {
   const ForgotPasswordScreen({Key? key}) : super(key: key);
@@ -24,16 +25,28 @@ class _ForgotPasswordScreenState extends State<ForgotPasswordScreen> {
     super.dispose();
   }
 
-  void _resetPassword() {
-    if (_formKey.currentState!.validate()) {
+  Future<void> _resetPassword() async {
+    if (!_formKey.currentState!.validate()) return;
+    if (_newPasswordController.text != _confirmPasswordController.text) return;
+    final email = _emailController.text.trim();
+    final newPassword = _newPasswordController.text;
+    final ok = await AuthService.instance.forgotPassword(email, newPassword);
+    if (!ok) {
       Get.snackbar(
-        'Success',
-        'Password reset successful',
-        backgroundColor: Colors.green,
+        'Error',
+        'No account found with this email',
+        backgroundColor: Colors.red,
         colorText: Colors.white,
       );
-      Get.back();
+      return;
     }
+    Get.snackbar(
+      'Success',
+      'Password reset successful',
+      backgroundColor: Colors.green,
+      colorText: Colors.white,
+    );
+    Get.back();
   }
 
   @override
@@ -218,7 +231,7 @@ class _ForgotPasswordScreenState extends State<ForgotPasswordScreen> {
                   ),
                   const SizedBox(height: 24),
                   ElevatedButton(
-                    onPressed: _resetPassword,
+                    onPressed: () => _resetPassword(),
                     style: ElevatedButton.styleFrom(
                       backgroundColor: Colors.white,
                       foregroundColor: Colors.black,

@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:get/get.dart';
 import 'package:font_awesome_flutter/font_awesome_flutter.dart';
+import '../services/auth_service.dart';
 import 'home_screen.dart';
 
 class SignupScreen extends StatefulWidget {
@@ -25,16 +26,33 @@ class _SignupScreenState extends State<SignupScreen> {
     super.dispose();
   }
 
-  void _signup() {
-    if (_formKey.currentState!.validate()) {
+  Future<void> _signup() async {
+    if (!_formKey.currentState!.validate()) return;
+    final email = _emailController.text.trim();
+    final username = _usernameController.text.trim();
+    final password = _passwordController.text;
+    final uid = await AuthService.instance.signUp(
+      email: email,
+      username: username,
+      password: password,
+    );
+    if (uid == null) {
       Get.snackbar(
-        'Success',
-        'Account created for ${_emailController.text}',
-        backgroundColor: Colors.green,
+        'Error',
+        'Email or username already in use',
+        backgroundColor: Colors.red,
         colorText: Colors.white,
       );
-      Get.off(() => const HomeScreen());
+      return;
     }
+    AuthService.instance.currentUserId = uid;
+    Get.snackbar(
+      'Success',
+      'Account created for $email',
+      backgroundColor: Colors.green,
+      colorText: Colors.white,
+    );
+    Get.off(() => const HomeScreen());
   }
 
   @override
@@ -204,7 +222,7 @@ class _SignupScreenState extends State<SignupScreen> {
                   ),
                   const SizedBox(height: 24),
                   ElevatedButton(
-                    onPressed: _signup,
+                    onPressed: () => _signup(),
                     style: ElevatedButton.styleFrom(
                       backgroundColor: Colors.white,
                       foregroundColor: Colors.black,
