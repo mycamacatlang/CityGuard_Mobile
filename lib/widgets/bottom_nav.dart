@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:get/get.dart';
 import '../constants/app_colors.dart';
 
@@ -8,6 +9,8 @@ class BottomNav extends StatelessWidget {
   const BottomNav({super.key, required this.currentIndex});
 
   void _onTap(int index) {
+    if (index == currentIndex) return;
+    HapticFeedback.lightImpact();
     if (index == 0) Get.offAllNamed('/home');
     if (index == 1) Get.offAllNamed('/location');
     if (index == 2) Get.offAllNamed('/safetytips');
@@ -17,20 +20,56 @@ class BottomNav extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Container(
-      margin: const EdgeInsets.all(16),
-      padding: const EdgeInsets.symmetric(vertical: 10, horizontal: 12),
+      margin: const EdgeInsets.fromLTRB(16, 0, 16, 16),
       decoration: BoxDecoration(
-        color: AppColors.primary,
-        borderRadius: BorderRadius.circular(20),
-      ),
-      child: Row(
-        mainAxisAlignment: MainAxisAlignment.spaceAround,
-        children: [
-          _NavItem(icon: Icons.home, label: 'Home', index: 0, currentIndex: currentIndex, onTap: _onTap),
-          _NavItem(icon: Icons.location_on, label: 'Location', index: 1, currentIndex: currentIndex, onTap: _onTap),
-          _NavItem(icon: Icons.shield, label: 'Safety Tips', index: 2, currentIndex: currentIndex, onTap: _onTap),
-          _NavItem(icon: Icons.person, label: 'Account', index: 3, currentIndex: currentIndex, onTap: _onTap),
+        color: AppColors.surface,
+        borderRadius: BorderRadius.circular(24),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withValues(alpha: 0.1),
+            blurRadius: 20,
+            offset: const Offset(0, -4),
+          ),
         ],
+      ),
+      child: ClipRRect(
+        borderRadius: BorderRadius.circular(24),
+        child: Container(
+          padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 8),
+          child: Row(
+            mainAxisAlignment: MainAxisAlignment.spaceAround,
+            children: [
+              _NavItem(
+                icon: Icons.home_rounded,
+                label: 'Home',
+                index: 0,
+                currentIndex: currentIndex,
+                onTap: _onTap,
+              ),
+              _NavItem(
+                icon: Icons.location_on_rounded,
+                label: 'Location',
+                index: 1,
+                currentIndex: currentIndex,
+                onTap: _onTap,
+              ),
+              _NavItem(
+                icon: Icons.health_and_safety_rounded,
+                label: 'Safety',
+                index: 2,
+                currentIndex: currentIndex,
+                onTap: _onTap,
+              ),
+              _NavItem(
+                icon: Icons.person_rounded,
+                label: 'Account',
+                index: 3,
+                currentIndex: currentIndex,
+                onTap: _onTap,
+              ),
+            ],
+          ),
+        ),
       ),
     );
   }
@@ -54,19 +93,42 @@ class _NavItem extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final bool selected = index == currentIndex;
-    final iconColor = selected ? Colors.black : Colors.white;
-    // ignore: deprecated_member_use
-    final textColor = Colors.white.withOpacity(selected ? 1.0 : 0.95);
+
     return GestureDetector(
       onTap: () => onTap(index),
       behavior: HitTestBehavior.opaque,
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Icon(icon, color: iconColor),
-          const SizedBox(height: 6),
-          Text(label, style: TextStyle(color: textColor, fontSize: 12)),
-        ],
+      child: AnimatedContainer(
+        duration: const Duration(milliseconds: 200),
+        curve: Curves.easeInOut,
+        padding: EdgeInsets.symmetric(
+          horizontal: selected ? 16 : 12,
+          vertical: 8,
+        ),
+        decoration: BoxDecoration(
+          color: selected ? AppColors.primary : Colors.transparent,
+          borderRadius: BorderRadius.circular(16),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(
+              icon,
+              color: selected ? AppColors.white : AppColors.grey500,
+              size: 24,
+            ),
+            if (selected) ...[
+              const SizedBox(width: 8),
+              Text(
+                label,
+                style: const TextStyle(
+                  color: AppColors.white,
+                  fontWeight: FontWeight.w600,
+                  fontSize: 13,
+                ),
+              ),
+            ],
+          ],
+        ),
       ),
     );
   }

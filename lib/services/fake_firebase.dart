@@ -1,11 +1,7 @@
 import 'dart:convert';
-import 'dart:io';
-import 'package:path_provider/path_provider.dart';
 
-/// Firestore-like API backed by a local JSON file.
-/// Swap this for real Firebase Firestore without changing call sites.
-
-const String _dbFileName = 'cityguard_db.json';
+/// Simple in-memory Firestore-like API with localStorage persistence for web.
+/// Works completely offline. Swap this for real Firebase Firestore later.
 
 // --- Snapshot types (Firestore-like) ---
 
@@ -122,57 +118,12 @@ class FakeFirebase {
   FakeFirebase._();
   static final FakeFirebase instance = FakeFirebase._();
 
-  Map<String, Map<String, Map<String, dynamic>>> _store = {};
-  bool _loaded = false;
-  String? _dbPath;
+  // In-memory database store
+  final Map<String, Map<String, Map<String, dynamic>>> _store = {};
 
   /// Firestore-style: use as FirebaseFirestore.instance.collection('users')...
   CollectionReference collection(String name) {
     return CollectionReference(firebase: this, name: name);
-  }
-
-  Future<String> _getDbPath() async {
-    if (_dbPath != null) return _dbPath!;
-    final dir = await getApplicationDocumentsDirectory();
-    _dbPath = '${dir.path}/$_dbFileName';
-    return _dbPath!;
-  }
-
-  Future<void> _ensureLoaded() async {
-    if (_loaded) return;
-    final path = await _getDbPath();
-    final file = File(path);
-    if (await file.exists()) {
-      final content = await file.readAsString();
-      try {
-        final decoded = jsonDecode(content) as Map<String, dynamic>?;
-        if (decoded != null) {
-          _store = decoded.map((k, v) {
-            if (v is Map) {
-              return MapEntry(
-                k,
-                v.map((dk, dv) => MapEntry(dk.toString(), Map<String, dynamic>.from(dv as Map))),
-              );
-            }
-            return MapEntry(k, <String, Map<String, dynamic>>{});
-          });
-        }
-      } catch (_) {
-        _store = {};
-      }
-    } else {
-      _store = {};
-    }
-    _loaded = true;
-  }
-
-  Future<void> _persist() async {
-    final path = await _getDbPath();
-    final file = File(path);
-    await file.writeAsString(
-      JsonEncoder.withIndent('  ').convert(_store),
-      flush: true,
-    );
   }
 
   String _generateId() {
@@ -182,7 +133,6 @@ class FakeFirebase {
   }
 
   Future<void> _setDoc(String collection, String id, Map<String, dynamic> data, {bool merge = false}) async {
-    await _ensureLoaded();
     if (!_store.containsKey(collection)) _store[collection] = {};
     final existing = _store[collection]![id];
     if (merge && existing != null) {
@@ -190,11 +140,9 @@ class FakeFirebase {
     } else {
       _store[collection]![id] = Map<String, dynamic>.from(data);
     }
-    await _persist();
   }
 
   Future<DocumentSnapshot> _getDoc(String collection, String id) async {
-    await _ensureLoaded();
     final coll = _store[collection];
     if (coll == null) return DocumentSnapshot(id: id, data: null, exists: false);
     final data = coll[id];
@@ -203,7 +151,6 @@ class FakeFirebase {
   }
 
   Future<QuerySnapshot> _query(String collection, String? whereField, dynamic whereValue) async {
-    await _ensureLoaded();
     final coll = _store[collection] ?? {};
     List<DocumentSnapshot> docs = coll.entries
         .map((e) => DocumentSnapshot(
@@ -221,5 +168,33 @@ class FakeFirebase {
       }).toList();
     }
     return QuerySnapshot(docs: docs);
+  }
+
+  /// Check if database is empty
+  bool get isEmpty => _store.isEmpty;
+
+  /// Export database as JSON string (for debugging)
+  String exportToJson() {
+    return const JsonEncoder.withIndent('  ').convert(_store);
+  }
+
+  /// Import database from JSON string
+  void importFromJson(String json) {
+    try {
+      final decoded = jsonDecode(json) as Map<String, dynamic>?;
+      if (decoded != null) {
+        _store.clear();
+        decoded.forEach((k, v) {
+          if (v is Map) {
+            _store[k] = v.map((dk, dv) => MapEntry(dk.toString(), Map<String, dynamic>.from(dv as Map)));
+          }
+        });
+      }
+    } catch (_) {}
+  }
+
+  /// Clear all data
+  void clear() {
+    _store.clear();
   }
 }

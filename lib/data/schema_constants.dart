@@ -17,12 +17,17 @@ class Schema {
   static const String email = 'email';
   static const String username = 'username';
   static const String password = 'password';
+  static const String emailVerified = 'emailVerified';
 
   // user_profiles
   static const String firstName = 'firstName';
   static const String lastName = 'lastName';
   static const String birthday = 'birthday';
   static const String gender = 'gender';
+  static const String profileImagePath = 'profileImagePath';
+  static const String address = 'address';
+  static const String barangay = 'barangay';
+  static const String contactNumber = 'contactNumber';
 
   // incidents
   static const String type = 'type';
