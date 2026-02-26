@@ -1,6 +1,7 @@
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import '../data/schema_constants.dart';
+import 'package:flutter/foundation.dart';
 
 class AuthService {
   AuthService._();
@@ -17,10 +18,19 @@ class AuthService {
   /// Kept for compatibility with existing screens
   set currentUserId(String? value) {}
 
+  /// Check if email looks like a real email (not a test/dummy)
+  static bool isRealEmail(String email) {
+    final lower = email.toLowerCase();
+    return !lower.contains('test') &&
+        !lower.contains('dummy') &&
+        !lower.contains('fake') &&
+        !lower.contains('mailinator') &&
+        !lower.contains('example.com');
+  }
+
   /// Login with username — looks up email from Firestore then signs in
   Future<String?> login(String username, String password) async {
     try {
-      // Find email by username in Firestore
       final q = await _db
           .collection(Schema.users)
           .where(Schema.username, isEqualTo: username)
@@ -28,16 +38,19 @@ class AuthService {
 
       if (q.docs.isEmpty) return null;
 
-      final email = q.docs.first.data()[Schema.email] as String;
+      final data = q.docs.first.data();
+      final email = data[Schema.email];
 
-      // Sign in with Firebase Auth
+      if (email == null || email.toString().isEmpty) return null;
+
       final result = await _auth.signInWithEmailAndPassword(
-        email: email,
-        password: password,
+        email: email.toString().trim(),
+        password: password.trim(),
       );
 
       return result.user?.uid;
     } catch (e) {
+      debugPrint('Login error: $e');
       return null;
     }
   }
@@ -49,21 +62,18 @@ class AuthService {
     required String password,
   }) async {
     try {
-      // Check if username already taken
       final byUsername = await _db
           .collection(Schema.users)
           .where(Schema.username, isEqualTo: username)
           .get();
       if (byUsername.docs.isNotEmpty) return null;
 
-      // Create Firebase Auth user
       final result = await _auth.createUserWithEmailAndPassword(
         email: email,
         password: password,
       );
       final uid = result.user!.uid;
 
-      // Save user data to Firestore
       await _db.collection(Schema.users).doc(uid).set({
         Schema.email: email,
         Schema.username: username,
@@ -71,11 +81,15 @@ class AuthService {
         Schema.createdAt: _now(),
       });
 
-      // Create empty profile
       await _db.collection(Schema.userProfiles).doc(uid).set({
         Schema.userId: uid,
         Schema.updatedAt: _now(),
       });
+
+      // Send Firebase verification email if real email
+      if (isRealEmail(email)) {
+        await result.user!.sendEmailVerification();
+      }
 
       return uid;
     } catch (e) {
@@ -97,21 +111,18 @@ class AuthService {
     String? gender,
   }) async {
     try {
-      // Check if username already taken
       final byUsername = await _db
           .collection(Schema.users)
           .where(Schema.username, isEqualTo: username)
           .get();
       if (byUsername.docs.isNotEmpty) return null;
 
-      // Create Firebase Auth user
       final result = await _auth.createUserWithEmailAndPassword(
         email: email,
         password: password,
       );
       final uid = result.user!.uid;
 
-      // Save user data to Firestore
       await _db.collection(Schema.users).doc(uid).set({
         Schema.email: email,
         Schema.username: username,
@@ -119,7 +130,6 @@ class AuthService {
         Schema.createdAt: _now(),
       });
 
-      // Save full profile to Firestore
       await _db.collection(Schema.userProfiles).doc(uid).set({
         Schema.userId: uid,
         Schema.firstName: firstName,
@@ -132,8 +142,14 @@ class AuthService {
         Schema.updatedAt: _now(),
       });
 
+      // Send Firebase verification email if real email
+      if (isRealEmail(email)) {
+        await result.user!.sendEmailVerification();
+      }
+
       return uid;
     } catch (e) {
+      debugPrint('Signup error: $e');
       return null;
     }
   }
@@ -146,6 +162,23 @@ class AuthService {
     } catch (e) {
       return false;
     }
+  }
+
+  /// Check if Firebase has verified the current user's email
+  Future<bool> checkFirebaseEmailVerified() async {
+    try {
+      await _auth.currentUser?.reload();
+      return _auth.currentUser?.emailVerified ?? false;
+    } catch (e) {
+      return false;
+    }
+  }
+
+  /// Mark email as verified in Firestore
+  Future<void> markEmailVerified(String userId) async {
+    await _db.collection(Schema.users).doc(userId).update({
+      Schema.emailVerified: true,
+    });
   }
 
   /// Get profile map for user
@@ -184,4 +217,22 @@ class AuthService {
 
   /// No longer needed — kept for compatibility but does nothing
   Future<void> seedDummyDataIfEmpty() async {}
+
+  Future<void> submitReport(Map<String, dynamic> data) async {
+    await _db.collection('reports').add(data);
+  }
+
+  /// Resend Firebase verification email
+  Future<void> resendVerificationEmail() async {
+    await _auth.currentUser?.sendEmailVerification();
+  }
+
+  Future<void> deleteAccount(String userId) async {
+    // Delete from Firestore
+    await _db.collection(Schema.users).doc(userId).delete();
+    await _db.collection(Schema.userProfiles).doc(userId).delete();
+
+    // Delete from Firebase Auth
+    await _auth.currentUser?.delete();
+  }
 }

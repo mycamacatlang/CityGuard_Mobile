@@ -10,6 +10,7 @@ import 'screens/safety_tips_screen.dart';
 import 'screens/account_screen.dart';
 import 'package:firebase_core/firebase_core.dart';
 import 'firebase_options.dart';
+import 'package:firebase_auth/firebase_auth.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -46,7 +47,7 @@ class MyApp extends StatelessWidget {
       title: 'CityGuard',
       debugShowCheckedModeBanner: false,
       theme: _buildTheme(),
-      initialRoute: '/',
+      initialRoute: FirebaseAuth.instance.currentUser != null ? '/home' : '/',
       getPages: [
         GetPage(
           name: '/',

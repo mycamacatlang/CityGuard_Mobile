@@ -38,14 +38,37 @@ class _SignupScreenState extends State<SignupScreen> {
   bool _isLoading = false;
 
   final List<String> _barangays = [
-    'Bacayao Norte', 'Bacayao Sur', 'Barangay I (T. Bugallon)',
-    'Barangay II (Nueva)', 'Barangay IV (Zamora)', 'Bolosan',
-    'Bonuan Binloc', 'Bonuan Boquig', 'Bonuan Gueset', 'Calmay',
-    'Carael', 'Caranglaan', 'Herrero', 'Lasip Chico', 'Lasip Grande',
-    'Lomboy', 'Lucao', 'Malued', 'Mamalingling', 'Mangin',
-    'Mayombo', 'Pantal', 'Poblacion Oeste', 'Pogo Chico',
-    'Pogo Grande', 'Pugaro Suit', 'Salapingao', 'Salisay',
-    'Tambac', 'Tapuac', 'Tebeng',
+    'Bacayao Norte',
+    'Bacayao Sur',
+    'Barangay I (T. Bugallon)',
+    'Barangay II (Nueva)',
+    'Barangay IV (Zamora)',
+    'Bolosan',
+    'Bonuan Binloc',
+    'Bonuan Boquig',
+    'Bonuan Gueset',
+    'Calmay',
+    'Carael',
+    'Caranglaan',
+    'Herrero',
+    'Lasip Chico',
+    'Lasip Grande',
+    'Lomboy',
+    'Lucao',
+    'Malued',
+    'Mamalingling',
+    'Mangin',
+    'Mayombo',
+    'Pantal',
+    'Poblacion Oeste',
+    'Pogo Chico',
+    'Pogo Grande',
+    'Pugaro Suit',
+    'Salapingao',
+    'Salisay',
+    'Tambac',
+    'Tapuac',
+    'Tebeng',
   ];
 
   @override
@@ -82,8 +105,12 @@ class _SignupScreenState extends State<SignupScreen> {
   String? _validatePassword(String? value) {
     if (value == null || value.isEmpty) return 'Password is required';
     if (value.length < 8) return 'Password must be at least 8 characters';
-    if (!RegExp(r'[A-Z]').hasMatch(value)) return 'Include at least one uppercase letter';
-    if (!RegExp(r'[a-z]').hasMatch(value)) return 'Include at least one lowercase letter';
+    if (!RegExp(r'[A-Z]').hasMatch(value)) {
+      return 'Include at least one uppercase letter';
+    }
+    if (!RegExp(r'[a-z]').hasMatch(value)) {
+      return 'Include at least one lowercase letter';
+    }
     if (!RegExp(r'[0-9]').hasMatch(value)) return 'Include at least one number';
     return null;
   }
@@ -108,7 +135,6 @@ class _SignupScreenState extends State<SignupScreen> {
 
   void _nextPage() {
     if (_currentPage == 0) {
-      // Validate account info
       if (_validateEmail(_emailController.text) != null ||
           _validateUsername(_usernameController.text) != null ||
           _validatePassword(_passwordController.text) != null ||
@@ -171,20 +197,31 @@ class _SignupScreenState extends State<SignupScreen> {
       return;
     }
 
-    // Send verification email
     final email = _emailController.text.trim();
-    await EmailService.instance.sendVerificationCode(email);
-    AuthService.instance.currentUserId = uid;
-    setState(() => _isLoading = false);
 
-    Get.snackbar(
-      'Success',
-      'Account created! Please verify your email.',
-      backgroundColor: AppColors.success,
-      colorText: Colors.white,
-      margin: const EdgeInsets.all(16),
-    );
-    Get.off(() => VerificationScreen(email: email, userId: uid));
+    if (AuthService.isRealEmail(email)) {
+      // Real email — Firebase already sent verification link in signUpWithProfile
+      setState(() => _isLoading = false);
+      Get.snackbar(
+        'Check Your Email',
+        'A verification link has been sent to $email',
+        backgroundColor: AppColors.success,
+        colorText: Colors.white,
+      );
+      Get.off(() => VerificationScreen(email: email, userId: uid));
+    } else {
+      // Dummy/test email — use Mailtrap + offline fallback (code 188188)
+      await EmailService.instance.sendVerificationCode(email);
+      AuthService.instance.currentUserId = uid;
+      setState(() => _isLoading = false);
+      Get.snackbar(
+        'Success',
+        'Account created! Use code 188188 to verify.',
+        backgroundColor: AppColors.success,
+        colorText: Colors.white,
+      );
+      Get.off(() => VerificationScreen(email: email, userId: uid));
+    }
   }
 
   Future<void> _pickDate() async {
@@ -195,9 +232,9 @@ class _SignupScreenState extends State<SignupScreen> {
       firstDate: DateTime(1900),
       lastDate: now,
       builder: (context, child) => Theme(
-        data: Theme.of(context).copyWith(
-          colorScheme: ColorScheme.light(primary: AppColors.primary),
-        ),
+        data: Theme.of(
+          context,
+        ).copyWith(colorScheme: ColorScheme.light(primary: AppColors.primary)),
         child: child!,
       ),
     );
@@ -223,11 +260,9 @@ class _SignupScreenState extends State<SignupScreen> {
                   child: PageView(
                     controller: _pageController,
                     physics: const NeverScrollableScrollPhysics(),
-                    onPageChanged: (index) => setState(() => _currentPage = index),
-                    children: [
-                      _buildAccountPage(),
-                      _buildPersonalPage(),
-                    ],
+                    onPageChanged: (index) =>
+                        setState(() => _currentPage = index),
+                    children: [_buildAccountPage(), _buildPersonalPage()],
                   ),
                 ),
               ),
@@ -268,8 +303,13 @@ class _SignupScreenState extends State<SignupScreen> {
                   ),
                 ),
                 Text(
-                  _currentPage == 0 ? 'Step 1: Account Info' : 'Step 2: Personal Info',
-                  style: TextStyle(color: Colors.white.withValues(alpha: 0.8), fontSize: 14),
+                  _currentPage == 0
+                      ? 'Step 1: Account Info'
+                      : 'Step 2: Personal Info',
+                  style: TextStyle(
+                    color: Colors.white.withValues(alpha: 0.8),
+                    fontSize: 14,
+                  ),
                 ),
               ],
             ),
@@ -298,7 +338,9 @@ class _SignupScreenState extends State<SignupScreen> {
             child: Container(
               height: 4,
               decoration: BoxDecoration(
-                color: _currentPage >= 1 ? Colors.white : Colors.white.withValues(alpha: 0.3),
+                color: _currentPage >= 1
+                    ? Colors.white
+                    : Colors.white.withValues(alpha: 0.3),
                 borderRadius: BorderRadius.circular(2),
               ),
             ),
@@ -345,10 +387,13 @@ class _SignupScreenState extends State<SignupScreen> {
               obscure: _obscurePassword,
               suffixIcon: IconButton(
                 icon: Icon(
-                  _obscurePassword ? Icons.visibility_outlined : Icons.visibility_off_outlined,
+                  _obscurePassword
+                      ? Icons.visibility_outlined
+                      : Icons.visibility_off_outlined,
                   color: AppColors.grey500,
                 ),
-                onPressed: () => setState(() => _obscurePassword = !_obscurePassword),
+                onPressed: () =>
+                    setState(() => _obscurePassword = !_obscurePassword),
               ),
             ),
             _buildTextField(
@@ -360,10 +405,13 @@ class _SignupScreenState extends State<SignupScreen> {
               obscure: _obscureConfirm,
               suffixIcon: IconButton(
                 icon: Icon(
-                  _obscureConfirm ? Icons.visibility_outlined : Icons.visibility_off_outlined,
+                  _obscureConfirm
+                      ? Icons.visibility_outlined
+                      : Icons.visibility_off_outlined,
                   color: AppColors.grey500,
                 ),
-                onPressed: () => setState(() => _obscureConfirm = !_obscureConfirm),
+                onPressed: () =>
+                    setState(() => _obscureConfirm = !_obscureConfirm),
               ),
             ),
             const SizedBox(height: 8),
@@ -419,7 +467,10 @@ class _SignupScreenState extends State<SignupScreen> {
               icon: Icons.phone_rounded,
               validator: _validateContact,
               keyboardType: TextInputType.phone,
-              inputFormatters: [FilteringTextInputFormatter.digitsOnly, LengthLimitingTextInputFormatter(11)],
+              inputFormatters: [
+                FilteringTextInputFormatter.digitsOnly,
+                LengthLimitingTextInputFormatter(11),
+              ],
             ),
             _buildTextField(
               controller: _birthdayController,
@@ -454,7 +505,10 @@ class _SignupScreenState extends State<SignupScreen> {
               onChanged: (v) => setState(() => _selectedBarangay = v),
             ),
             const SizedBox(height: 24),
-            _buildButton(_isLoading ? 'Creating...' : 'Create Account', _isLoading ? null : _signup),
+            _buildButton(
+              _isLoading ? 'Creating...' : 'Create Account',
+              _isLoading ? null : _signup,
+            ),
           ],
         ),
       ),
@@ -479,7 +533,10 @@ class _SignupScreenState extends State<SignupScreen> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Text(label, style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 14)),
+          Text(
+            label,
+            style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 14),
+          ),
           const SizedBox(height: 8),
           TextFormField(
             controller: controller,
@@ -513,7 +570,10 @@ class _SignupScreenState extends State<SignupScreen> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Text(label, style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 14)),
+          Text(
+            label,
+            style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 14),
+          ),
           const SizedBox(height: 8),
           Container(
             padding: const EdgeInsets.symmetric(horizontal: 12),
@@ -529,9 +589,16 @@ class _SignupScreenState extends State<SignupScreen> {
                   child: DropdownButtonHideUnderline(
                     child: DropdownButton<String>(
                       value: value,
-                      hint: Text(hint, style: TextStyle(color: AppColors.textHint)),
+                      hint: Text(
+                        hint,
+                        style: TextStyle(color: AppColors.textHint),
+                      ),
                       isExpanded: true,
-                      items: items.map((e) => DropdownMenuItem(value: e, child: Text(e))).toList(),
+                      items: items
+                          .map(
+                            (e) => DropdownMenuItem(value: e, child: Text(e)),
+                          )
+                          .toList(),
                       onChanged: onChanged,
                       dropdownColor: AppColors.surface,
                       borderRadius: BorderRadius.circular(12),
@@ -556,12 +623,31 @@ class _SignupScreenState extends State<SignupScreen> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Text('Password must contain:', style: TextStyle(fontWeight: FontWeight.w600, color: AppColors.grey700, fontSize: 13)),
+          Text(
+            'Password must contain:',
+            style: TextStyle(
+              fontWeight: FontWeight.w600,
+              color: AppColors.grey700,
+              fontSize: 13,
+            ),
+          ),
           const SizedBox(height: 8),
-          _passwordRule('At least 8 characters', _passwordController.text.length >= 8),
-          _passwordRule('One uppercase letter', RegExp(r'[A-Z]').hasMatch(_passwordController.text)),
-          _passwordRule('One lowercase letter', RegExp(r'[a-z]').hasMatch(_passwordController.text)),
-          _passwordRule('One number', RegExp(r'[0-9]').hasMatch(_passwordController.text)),
+          _passwordRule(
+            'At least 8 characters',
+            _passwordController.text.length >= 8,
+          ),
+          _passwordRule(
+            'One uppercase letter',
+            RegExp(r'[A-Z]').hasMatch(_passwordController.text),
+          ),
+          _passwordRule(
+            'One lowercase letter',
+            RegExp(r'[a-z]').hasMatch(_passwordController.text),
+          ),
+          _passwordRule(
+            'One number',
+            RegExp(r'[0-9]').hasMatch(_passwordController.text),
+          ),
         ],
       ),
     );
@@ -578,7 +664,13 @@ class _SignupScreenState extends State<SignupScreen> {
             size: 16,
           ),
           const SizedBox(width: 8),
-          Text(text, style: TextStyle(color: met ? AppColors.success : AppColors.grey500, fontSize: 12)),
+          Text(
+            text,
+            style: TextStyle(
+              color: met ? AppColors.success : AppColors.grey500,
+              fontSize: 12,
+            ),
+          ),
         ],
       ),
     );
@@ -595,17 +687,37 @@ class _SignupScreenState extends State<SignupScreen> {
         style: ElevatedButton.styleFrom(
           backgroundColor: AppColors.primary,
           padding: const EdgeInsets.symmetric(vertical: 16),
-          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(16),
+          ),
           elevation: 0,
         ),
         child: _isLoading && label.contains('Creating')
-            ? const SizedBox(height: 20, width: 20, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
+            ? const SizedBox(
+                height: 20,
+                width: 20,
+                child: CircularProgressIndicator(
+                  strokeWidth: 2,
+                  color: Colors.white,
+                ),
+              )
             : Row(
                 mainAxisAlignment: MainAxisAlignment.center,
                 children: [
-                  Text(label, style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: Colors.white)),
+                  Text(
+                    label,
+                    style: const TextStyle(
+                      fontSize: 16,
+                      fontWeight: FontWeight.bold,
+                      color: Colors.white,
+                    ),
+                  ),
                   const SizedBox(width: 8),
-                  const Icon(Icons.arrow_forward_rounded, size: 20, color: Colors.white),
+                  const Icon(
+                    Icons.arrow_forward_rounded,
+                    size: 20,
+                    color: Colors.white,
+                  ),
                 ],
               ),
       ),

@@ -57,7 +57,7 @@ class _LoginScreenState extends State<LoginScreen> {
     setState(() => _isLoading = true);
 
     final username = _usernameController.text.trim();
-    final password = _passwordController.text;
+    final password = _passwordController.text.trim();
     final uid = await AuthService.instance.login(username, password);
 
     if (uid == null) {
@@ -104,9 +104,7 @@ class _LoginScreenState extends State<LoginScreen> {
   Widget build(BuildContext context) {
     return Scaffold(
       body: Container(
-        decoration: const BoxDecoration(
-          gradient: AppColors.primaryGradient,
-        ),
+        decoration: const BoxDecoration(gradient: AppColors.primaryGradient),
         child: SafeArea(
           child: Center(
             child: SingleChildScrollView(
@@ -119,7 +117,7 @@ class _LoginScreenState extends State<LoginScreen> {
                     // Logo
                     _buildLogo(),
                     const SizedBox(height: 40),
-                    
+
                     // Login card
                     Container(
                       padding: const EdgeInsets.all(24),
@@ -148,7 +146,7 @@ class _LoginScreenState extends State<LoginScreen> {
                             ),
                           ),
                           const SizedBox(height: 24),
-                          
+
                           // Username field
                           _buildTextField(
                             controller: _usernameController,
@@ -158,7 +156,7 @@ class _LoginScreenState extends State<LoginScreen> {
                             validator: _validateUsername,
                           ),
                           const SizedBox(height: 16),
-                          
+
                           // Password field
                           _buildTextField(
                             controller: _passwordController,
@@ -169,18 +167,23 @@ class _LoginScreenState extends State<LoginScreen> {
                             validator: _validatePassword,
                             suffixIcon: IconButton(
                               icon: Icon(
-                                _obscurePassword ? Icons.visibility_outlined : Icons.visibility_off_outlined,
+                                _obscurePassword
+                                    ? Icons.visibility_outlined
+                                    : Icons.visibility_off_outlined,
                                 color: AppColors.grey500,
                               ),
-                              onPressed: () => setState(() => _obscurePassword = !_obscurePassword),
+                              onPressed: () => setState(
+                                () => _obscurePassword = !_obscurePassword,
+                              ),
                             ),
                           ),
-                          
+
                           // Forgot password
                           Align(
                             alignment: Alignment.centerRight,
                             child: TextButton(
-                              onPressed: () => Get.to(() => const ForgotPasswordScreen()),
+                              onPressed: () =>
+                                  Get.to(() => const ForgotPasswordScreen()),
                               child: Text(
                                 'Forgot Password?',
                                 style: TextStyle(
@@ -191,32 +194,41 @@ class _LoginScreenState extends State<LoginScreen> {
                             ),
                           ),
                           const SizedBox(height: 8),
-                          
+
                           // Sign in button
                           _buildPrimaryButton(
                             label: 'Sign In',
                             isLoading: _isLoading,
                             onPressed: _login,
                           ),
-                          
+
                           const SizedBox(height: 24),
-                          
+
                           // Divider
                           Row(
                             children: [
-                              Expanded(child: Divider(color: AppColors.grey300)),
+                              Expanded(
+                                child: Divider(color: AppColors.grey300),
+                              ),
                               Padding(
-                                padding: const EdgeInsets.symmetric(horizontal: 16),
+                                padding: const EdgeInsets.symmetric(
+                                  horizontal: 16,
+                                ),
                                 child: Text(
                                   'or continue with',
-                                  style: TextStyle(color: AppColors.grey500, fontSize: 12),
+                                  style: TextStyle(
+                                    color: AppColors.grey500,
+                                    fontSize: 12,
+                                  ),
                                 ),
                               ),
-                              Expanded(child: Divider(color: AppColors.grey300)),
+                              Expanded(
+                                child: Divider(color: AppColors.grey300),
+                              ),
                             ],
                           ),
                           const SizedBox(height: 24),
-                          
+
                           // Social buttons
                           Row(
                             mainAxisAlignment: MainAxisAlignment.center,
@@ -224,22 +236,28 @@ class _LoginScreenState extends State<LoginScreen> {
                               _buildSocialButton(
                                 icon: FontAwesomeIcons.google,
                                 color: const Color(0xFFDB4437),
-                                onTap: () => Get.snackbar('Info', 'Google login coming soon'),
+                                onTap: () => Get.snackbar(
+                                  'Info',
+                                  'Google login coming soon',
+                                ),
                               ),
                               const SizedBox(width: 16),
                               _buildSocialButton(
                                 icon: FontAwesomeIcons.facebookF,
                                 color: const Color(0xFF1877F2),
-                                onTap: () => Get.snackbar('Info', 'Facebook login coming soon'),
+                                onTap: () => Get.snackbar(
+                                  'Info',
+                                  'Facebook login coming soon',
+                                ),
                               ),
                             ],
                           ),
                         ],
                       ),
                     ),
-                    
+
                     const SizedBox(height: 24),
-                    
+
                     // Sign up link
                     Row(
                       mainAxisAlignment: MainAxisAlignment.center,
@@ -413,9 +431,7 @@ class _LoginScreenState extends State<LoginScreen> {
           borderRadius: BorderRadius.circular(16),
           border: Border.all(color: AppColors.grey200),
         ),
-        child: Center(
-          child: FaIcon(icon, color: color, size: 22),
-        ),
+        child: Center(child: FaIcon(icon, color: color, size: 22)),
       ),
     );
   }

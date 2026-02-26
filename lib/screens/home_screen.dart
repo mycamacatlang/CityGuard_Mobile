@@ -6,6 +6,7 @@ import '../constants/app_colors.dart';
 import '../widgets/bottom_nav.dart';
 import '../services/auth_service.dart';
 import 'account_screen.dart';
+import 'report_screen.dart';
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
@@ -17,12 +18,12 @@ class HomeScreen extends StatefulWidget {
 class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
   String _userName = 'User';
   final String _currentLocation = 'Dagupan City, Pangasinan';
-  
+
   bool _isHolding = false;
   bool _showEmergencySelector = false;
   double _swipeOffset = 0;
   int _selectedEmergencyIndex = -1;
-  
+
   late AnimationController _pulseController;
   late AnimationController _holdController;
   late Animation<double> _pulseAnimation;
@@ -49,12 +50,12 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
   void initState() {
     super.initState();
     _loadUserData();
-    
+
     _pulseController = AnimationController(
       duration: const Duration(milliseconds: 1800),
       vsync: this,
     )..repeat(reverse: true);
-    
+
     _pulseAnimation = Tween<double>(begin: 1.0, end: 1.06).animate(
       CurvedAnimation(parent: _pulseController, curve: Curves.easeInOut),
     );
@@ -63,10 +64,11 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
       duration: const Duration(milliseconds: 500),
       vsync: this,
     );
-    
-    _holdProgress = Tween<double>(begin: 0.0, end: 1.0).animate(
-      CurvedAnimation(parent: _holdController, curve: Curves.easeOut),
-    );
+
+    _holdProgress = Tween<double>(
+      begin: 0.0,
+      end: 1.0,
+    ).animate(CurvedAnimation(parent: _holdController, curve: Curves.easeOut));
 
     _holdController.addStatusListener((status) {
       if (status == AnimationStatus.completed && _isHolding) {
@@ -128,7 +130,7 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
       setState(() {
         _swipeOffset += details.delta.dx;
         _swipeOffset = _swipeOffset.clamp(-150.0, 150.0);
-        
+
         if (_swipeOffset < -60) {
           _selectedEmergencyIndex = 0;
         } else if (_swipeOffset > 60) {
@@ -150,15 +152,22 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
   }
 
   void _triggerEmergency(EmergencyType type) {
-    Get.snackbar(
-      '${type.title} Alert',
-      'Connecting to emergency services...',
-      backgroundColor: type.color,
-      colorText: Colors.white,
-      icon: Icon(type.icon, color: Colors.white),
-      duration: const Duration(seconds: 3),
-      margin: const EdgeInsets.all(16),
-    );
+    _resetSelector();
+    if (type.id == 'other') {
+      // Open AI Report Screen
+      Get.to(() => const ReportScreen());
+    } else {
+      // Medical alert
+      Get.snackbar(
+        '${type.title} Alert',
+        'Connecting to emergency services...',
+        backgroundColor: type.color,
+        colorText: Colors.white,
+        icon: Icon(type.icon, color: Colors.white),
+        duration: const Duration(seconds: 3),
+        margin: const EdgeInsets.all(16),
+      );
+    }
   }
 
   void _resetSelector() {
@@ -181,7 +190,9 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
           if (_showEmergencySelector) _buildEmergencySelector(),
         ],
       ),
-      bottomNavigationBar: _showEmergencySelector ? null : const BottomNav(currentIndex: 0),
+      bottomNavigationBar: _showEmergencySelector
+          ? null
+          : const BottomNav(currentIndex: 0),
     );
   }
 
@@ -233,7 +244,11 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
                   color: Colors.white,
                   borderRadius: BorderRadius.circular(12),
                 ),
-                child: Icon(Icons.shield_rounded, color: AppColors.primary, size: 24),
+                child: Icon(
+                  Icons.shield_rounded,
+                  color: AppColors.primary,
+                  size: 24,
+                ),
               ),
               const SizedBox(width: 12),
               const Expanded(
@@ -250,7 +265,10 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
               GestureDetector(
                 onTap: () => Get.to(() => const AccountScreen()),
                 child: Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 12,
+                    vertical: 8,
+                  ),
                   decoration: BoxDecoration(
                     color: Colors.white.withValues(alpha: 0.2),
                     borderRadius: BorderRadius.circular(16),
@@ -272,7 +290,11 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
                           color: Colors.white,
                           shape: BoxShape.circle,
                         ),
-                        child: Icon(Icons.person_rounded, color: AppColors.primary, size: 20),
+                        child: Icon(
+                          Icons.person_rounded,
+                          color: AppColors.primary,
+                          size: 20,
+                        ),
                       ),
                     ],
                   ),
@@ -289,7 +311,11 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
             ),
             child: Row(
               children: [
-                const Icon(Icons.location_on_rounded, color: Colors.white, size: 18),
+                const Icon(
+                  Icons.location_on_rounded,
+                  color: Colors.white,
+                  size: 18,
+                ),
                 const SizedBox(width: 8),
                 Expanded(
                   child: Text(
@@ -302,7 +328,10 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
                   ),
                 ),
                 Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 10,
+                    vertical: 4,
+                  ),
                   decoration: BoxDecoration(
                     color: AppColors.success,
                     borderRadius: BorderRadius.circular(20),
@@ -314,7 +343,11 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
                       SizedBox(width: 4),
                       Text(
                         'Online',
-                        style: TextStyle(color: Colors.white, fontSize: 11, fontWeight: FontWeight.w600),
+                        style: TextStyle(
+                          color: Colors.white,
+                          fontSize: 11,
+                          fontWeight: FontWeight.w600,
+                        ),
                       ),
                     ],
                   ),
@@ -335,10 +368,10 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
       child: AnimatedBuilder(
         animation: Listenable.merge([_pulseAnimation, _holdProgress]),
         builder: (context, child) {
-          final scale = _isHolding 
+          final scale = _isHolding
               ? 1.0 + (_holdProgress.value * 0.08)
               : _pulseAnimation.value;
-          
+
           return Transform.scale(
             scale: scale,
             child: Container(
@@ -385,7 +418,9 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
                       child: CircularProgressIndicator(
                         value: _holdProgress.value,
                         strokeWidth: 4,
-                        valueColor: const AlwaysStoppedAnimation<Color>(Colors.white),
+                        valueColor: const AlwaysStoppedAnimation<Color>(
+                          Colors.white,
+                        ),
                         backgroundColor: Colors.white.withValues(alpha: 0.3),
                       ),
                     ),
@@ -404,7 +439,10 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
                       ),
                       const SizedBox(height: 4),
                       Container(
-                        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 12,
+                          vertical: 4,
+                        ),
                         decoration: BoxDecoration(
                           color: Colors.white.withValues(alpha: 0.25),
                           borderRadius: BorderRadius.circular(12),
@@ -450,7 +488,11 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
                   color: AppColors.primary.withValues(alpha: 0.1),
                   borderRadius: BorderRadius.circular(10),
                 ),
-                child: Icon(Icons.touch_app_rounded, color: AppColors.primary, size: 20),
+                child: Icon(
+                  Icons.touch_app_rounded,
+                  color: AppColors.primary,
+                  size: 20,
+                ),
               ),
               const SizedBox(width: 10),
               const Text(
@@ -464,9 +506,17 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
             ],
           ),
           const SizedBox(height: 16),
-          _instructionRow(Icons.ads_click_rounded, 'Tap', 'for quick emergency alert'),
+          _instructionRow(
+            Icons.ads_click_rounded,
+            'Tap',
+            'for quick emergency alert',
+          ),
           const SizedBox(height: 10),
-          _instructionRow(Icons.pan_tool_rounded, 'Hold & Swipe', 'to choose type'),
+          _instructionRow(
+            Icons.pan_tool_rounded,
+            'Hold & Swipe',
+            'to choose type',
+          ),
         ],
       ),
     );
@@ -552,7 +602,7 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
               ),
             ),
             const SizedBox(height: 40),
-            
+
             SizedBox(
               height: 180,
               child: Row(
@@ -564,9 +614,9 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
                 ],
               ),
             ),
-            
+
             const SizedBox(height: 40),
-            
+
             Container(
               padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
               decoration: BoxDecoration(
@@ -577,11 +627,18 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
               child: Row(
                 mainAxisSize: MainAxisSize.min,
                 children: [
-                  Icon(Icons.close_rounded, color: Colors.white.withValues(alpha: 0.8), size: 18),
+                  Icon(
+                    Icons.close_rounded,
+                    color: Colors.white.withValues(alpha: 0.8),
+                    size: 18,
+                  ),
                   const SizedBox(width: 8),
                   Text(
                     'Tap anywhere to cancel',
-                    style: TextStyle(color: Colors.white.withValues(alpha: 0.8), fontSize: 13),
+                    style: TextStyle(
+                      color: Colors.white.withValues(alpha: 0.8),
+                      fontSize: 13,
+                    ),
                   ),
                 ],
               ),
@@ -595,7 +652,7 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
   Widget _buildSwipeOption(int index, {required bool isLeft}) {
     final isSelected = _selectedEmergencyIndex == index;
     final type = _emergencyTypes[index];
-    
+
     return AnimatedContainer(
       duration: const Duration(milliseconds: 150),
       width: isSelected ? 130 : 100,
@@ -604,11 +661,18 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
         color: isSelected ? type.color : Colors.white.withValues(alpha: 0.1),
         borderRadius: BorderRadius.circular(24),
         border: Border.all(
-          color: isSelected ? Colors.white : Colors.white.withValues(alpha: 0.3),
+          color: isSelected
+              ? Colors.white
+              : Colors.white.withValues(alpha: 0.3),
           width: isSelected ? 3 : 2,
         ),
         boxShadow: isSelected
-            ? [BoxShadow(color: type.color.withValues(alpha: 0.5), blurRadius: 20)]
+            ? [
+                BoxShadow(
+                  color: type.color.withValues(alpha: 0.5),
+                  blurRadius: 20,
+                ),
+              ]
             : null,
       ),
       child: Column(
@@ -617,9 +681,15 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
           Row(
             mainAxisAlignment: MainAxisAlignment.center,
             children: [
-              if (isLeft) Icon(Icons.chevron_left_rounded, color: Colors.white, size: 24),
+              if (isLeft)
+                Icon(Icons.chevron_left_rounded, color: Colors.white, size: 24),
               Icon(type.icon, color: Colors.white, size: isSelected ? 36 : 28),
-              if (!isLeft) Icon(Icons.chevron_right_rounded, color: Colors.white, size: 24),
+              if (!isLeft)
+                Icon(
+                  Icons.chevron_right_rounded,
+                  color: Colors.white,
+                  size: 24,
+                ),
             ],
           ),
           const SizedBox(height: 12),
@@ -671,10 +741,10 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
                 ],
               ),
               child: Icon(
-                _selectedEmergencyIndex >= 0 
+                _selectedEmergencyIndex >= 0
                     ? _emergencyTypes[_selectedEmergencyIndex].icon
                     : Icons.swipe_rounded,
-                color: _selectedEmergencyIndex >= 0 
+                color: _selectedEmergencyIndex >= 0
                     ? _emergencyTypes[_selectedEmergencyIndex].color
                     : AppColors.grey500,
                 size: 26,
@@ -685,7 +755,11 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
           Row(
             mainAxisAlignment: MainAxisAlignment.center,
             children: [
-              Icon(Icons.arrow_back_rounded, color: Colors.white.withValues(alpha: 0.5), size: 14),
+              Icon(
+                Icons.arrow_back_rounded,
+                color: Colors.white.withValues(alpha: 0.5),
+                size: 14,
+              ),
               Padding(
                 padding: const EdgeInsets.symmetric(horizontal: 4),
                 child: Text(
@@ -697,7 +771,11 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
                   ),
                 ),
               ),
-              Icon(Icons.arrow_forward_rounded, color: Colors.white.withValues(alpha: 0.5), size: 14),
+              Icon(
+                Icons.arrow_forward_rounded,
+                color: Colors.white.withValues(alpha: 0.5),
+                size: 14,
+              ),
             ],
           ),
         ],

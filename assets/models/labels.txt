@@ -1,0 +1,6 @@
+Fire
+Flood
+Accident
+Crime
+Others
+Medical Emergency
