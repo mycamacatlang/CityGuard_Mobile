@@ -24,7 +24,7 @@ class Schema {
   static const String lastName = 'lastName';
   static const String birthday = 'birthday';
   static const String gender = 'gender';
-  static const String profileImagePath = 'profileImagePath';
+  static const String profileImageUrl = 'profileImageUrl';
   static const String address = 'address';
   static const String barangay = 'barangay';
   static const String contactNumber = 'contactNumber';

@@ -3,8 +3,10 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:get/get.dart';
 import 'package:image_picker/image_picker.dart';
+import 'package:cloud_firestore/cloud_firestore.dart';
 import '../constants/app_colors.dart';
 import '../services/auth_service.dart';
+import '../services/cloudinary_service.dart';
 import '../data/schema_constants.dart';
 import '../widgets/bottom_nav.dart';
 import 'login_screen.dart';
@@ -25,21 +27,48 @@ class _AccountScreenState extends State<AccountScreen> {
   final _addressController = TextEditingController();
   String? _gender;
   String? _barangay;
-  String? _profileImagePath;
+
+  String? _profileImageUrl;
+  String? _localImagePath;
+  bool _uploadingImage = false;
+
   String? _email;
   String? _username;
   bool _loading = true;
   bool _saving = false;
 
   final List<String> _barangays = [
-    'Bacayao Norte', 'Bacayao Sur', 'Barangay I (T. Bugallon)',
-    'Barangay II (Nueva)', 'Barangay IV (Zamora)', 'Bolosan',
-    'Bonuan Binloc', 'Bonuan Boquig', 'Bonuan Gueset', 'Calmay',
-    'Carael', 'Caranglaan', 'Herrero', 'Lasip Chico', 'Lasip Grande',
-    'Lomboy', 'Lucao', 'Malued', 'Mamalingling', 'Mangin',
-    'Mayombo', 'Pantal', 'Poblacion Oeste', 'Pogo Chico',
-    'Pogo Grande', 'Pugaro Suit', 'Salapingao', 'Salisay',
-    'Tambac', 'Tapuac', 'Tebeng',
+    'Bacayao Norte',
+    'Bacayao Sur',
+    'Barangay I (T. Bugallon)',
+    'Barangay II (Nueva)',
+    'Barangay IV (Zamora)',
+    'Bolosan',
+    'Bonuan Binloc',
+    'Bonuan Boquig',
+    'Bonuan Gueset',
+    'Calmay',
+    'Carael',
+    'Caranglaan',
+    'Herrero',
+    'Lasip Chico',
+    'Lasip Grande',
+    'Lomboy',
+    'Lucao',
+    'Malued',
+    'Mamalingling',
+    'Mangin',
+    'Mayombo',
+    'Pantal',
+    'Poblacion Oeste',
+    'Pogo Chico',
+    'Pogo Grande',
+    'Pugaro Suit',
+    'Salapingao',
+    'Salisay',
+    'Tambac',
+    'Tapuac',
+    'Tebeng',
   ];
 
   @override
@@ -60,14 +89,16 @@ class _AccountScreenState extends State<AccountScreen> {
 
     if (mounted) {
       setState(() {
-        _firstNameController.text = profile?[Schema.firstName]?.toString() ?? '';
+        _firstNameController.text =
+            profile?[Schema.firstName]?.toString() ?? '';
         _lastNameController.text = profile?[Schema.lastName]?.toString() ?? '';
         _birthdayController.text = profile?[Schema.birthday]?.toString() ?? '';
-        _contactController.text = profile?[Schema.contactNumber]?.toString() ?? '';
+        _contactController.text =
+            profile?[Schema.contactNumber]?.toString() ?? '';
         _addressController.text = profile?[Schema.address]?.toString() ?? '';
         _gender = profile?[Schema.gender]?.toString();
         _barangay = profile?[Schema.barangay]?.toString();
-        _profileImagePath = profile?[Schema.profileImagePath]?.toString();
+        _profileImageUrl = profile?[Schema.profileImageUrl]?.toString();
         _email = user?[Schema.email]?.toString();
         _username = user?[Schema.username]?.toString();
         _loading = false;
@@ -85,9 +116,38 @@ class _AccountScreenState extends State<AccountScreen> {
     super.dispose();
   }
 
+  // ─── Validators ─────────────────────────────────────────────────────────────
+
+  String? _validateName(String? value, String field) {
+    if (value == null || value.trim().isEmpty) return null;
+    if (value.trim().length < 2) {
+      return '$field must be at least 2 characters';
+    }
+    if (RegExp(r'[0-9]').hasMatch(value.trim())) {
+      return '$field must not contain numbers';
+    }
+    if (RegExp(r'[!@#\$%^&*()_+=\[\]{};:"|<>?,/\\]').hasMatch(value.trim())) {
+      return '$field must not contain special characters';
+    }
+    if (!RegExp(r'[a-zA-ZÀ-ÿ]').hasMatch(value.trim())) {
+      return '$field must contain at least one letter';
+    }
+    return null;
+  }
+
+  String? _validateContact(String? value) {
+    if (value == null || value.isEmpty) return null;
+    if (!RegExp(r'^09\d{9}$').hasMatch(value)) {
+      return 'Enter valid PH mobile (09XXXXXXXXX)';
+    }
+    return null;
+  }
+
+  // ─── Image picker ────────────────────────────────────────────────────────────
+
   Future<void> _pickImage() async {
     final picker = ImagePicker();
-    
+
     final source = await showModalBottomSheet<ImageSource>(
       context: context,
       backgroundColor: AppColors.surface,
@@ -146,10 +206,49 @@ class _AccountScreenState extends State<AccountScreen> {
         imageQuality: 80,
       );
 
-      if (image != null) {
-        setState(() => _profileImagePath = image.path);
+      if (image == null) return;
+
+      setState(() {
+        _localImagePath = image.path;
+        _uploadingImage = true;
+      });
+
+      final url = await CloudinaryService.instance.uploadProfileImage(
+        image.path,
+      );
+
+      if (url != null) {
+        final uid = AuthService.instance.currentUserId;
+        if (uid != null) {
+          await AuthService.instance.updateProfile(uid, {
+            Schema.profileImageUrl: url,
+          });
+        }
+        setState(() {
+          _profileImageUrl = url;
+          _localImagePath = null;
+          _uploadingImage = false;
+        });
+        Get.snackbar(
+          'Photo Updated',
+          'Profile picture saved successfully',
+          backgroundColor: AppColors.success,
+          colorText: Colors.white,
+          margin: const EdgeInsets.all(16),
+        );
+      } else {
+        setState(() => _uploadingImage = false);
+        Get.snackbar(
+          'Upload Failed',
+          'Could not save photo. It will only show on this device.',
+          backgroundColor: Colors.orange,
+          colorText: Colors.white,
+          margin: const EdgeInsets.all(16),
+          duration: const Duration(seconds: 4),
+        );
       }
     } catch (e) {
+      setState(() => _uploadingImage = false);
       Get.snackbar(
         'Error',
         'Could not pick image',
@@ -178,14 +277,13 @@ class _AccountScreenState extends State<AccountScreen> {
             child: Icon(icon, color: AppColors.primary, size: 32),
           ),
           const SizedBox(height: 10),
-          Text(
-            label,
-            style: const TextStyle(fontWeight: FontWeight.w600),
-          ),
+          Text(label, style: const TextStyle(fontWeight: FontWeight.w600)),
         ],
       ),
     );
   }
+
+  // ─── Save ────────────────────────────────────────────────────────────────────
 
   Future<void> _saveProfile() async {
     if (!(_formKey.currentState?.validate() ?? false)) return;
@@ -203,7 +301,7 @@ class _AccountScreenState extends State<AccountScreen> {
       Schema.address: _addressController.text.trim(),
       Schema.gender: _gender,
       Schema.barangay: _barangay,
-      Schema.profileImagePath: _profileImagePath,
+      if (_profileImageUrl != null) Schema.profileImageUrl: _profileImageUrl,
     });
 
     setState(() => _saving = false);
@@ -237,7 +335,9 @@ class _AccountScreenState extends State<AccountScreen> {
             },
             style: ElevatedButton.styleFrom(
               backgroundColor: AppColors.primary,
-              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(12),
+              ),
             ),
             child: const Text('Logout', style: TextStyle(color: Colors.white)),
           ),
@@ -263,20 +363,81 @@ class _AccountScreenState extends State<AccountScreen> {
         child: child!,
       ),
     );
-
     if (picked != null) {
       _birthdayController.text =
           '${picked.year}-${picked.month.toString().padLeft(2, '0')}-${picked.day.toString().padLeft(2, '0')}';
     }
   }
 
-  String? _validateContact(String? value) {
-    if (value == null || value.isEmpty) return null;
-    if (!RegExp(r'^09\d{9}$').hasMatch(value)) {
-      return 'Enter valid PH mobile (09XXXXXXXXX)';
+  // ─── Profile image widget ────────────────────────────────────────────────────
+
+  Widget _buildProfileImage() {
+    ImageProvider? imageProvider;
+    if (_localImagePath != null) {
+      imageProvider = FileImage(File(_localImagePath!));
+    } else if (_profileImageUrl != null) {
+      imageProvider = NetworkImage(_profileImageUrl!);
     }
-    return null;
+
+    return Stack(
+      children: [
+        Container(
+          padding: const EdgeInsets.all(4),
+          decoration: const BoxDecoration(
+            color: Colors.white,
+            shape: BoxShape.circle,
+          ),
+          child: CircleAvatar(
+            radius: 50,
+            backgroundColor: AppColors.grey200,
+            backgroundImage: imageProvider,
+            child: imageProvider == null
+                ? Icon(Icons.person_rounded, size: 50, color: AppColors.grey400)
+                : null,
+          ),
+        ),
+        if (_uploadingImage)
+          Positioned.fill(
+            child: Container(
+              decoration: BoxDecoration(
+                color: Colors.black.withValues(alpha: 0.5),
+                shape: BoxShape.circle,
+              ),
+              child: const Center(
+                child: SizedBox(
+                  width: 24,
+                  height: 24,
+                  child: CircularProgressIndicator(
+                    strokeWidth: 2,
+                    color: Colors.white,
+                  ),
+                ),
+              ),
+            ),
+          ),
+        if (!_uploadingImage)
+          Positioned(
+            right: 0,
+            bottom: 0,
+            child: Container(
+              padding: const EdgeInsets.all(8),
+              decoration: BoxDecoration(
+                color: AppColors.primary,
+                shape: BoxShape.circle,
+                border: Border.all(color: Colors.white, width: 2),
+              ),
+              child: const Icon(
+                Icons.camera_alt_rounded,
+                color: Colors.white,
+                size: 16,
+              ),
+            ),
+          ),
+      ],
+    );
   }
+
+  // ─── Build ───────────────────────────────────────────────────────────────────
 
   @override
   Widget build(BuildContext context) {
@@ -295,7 +456,8 @@ class _AccountScreenState extends State<AccountScreen> {
   }
 
   Widget _buildAppBar() {
-    final fullName = '${_firstNameController.text} ${_lastNameController.text}'.trim();
+    final fullName = '${_firstNameController.text} ${_lastNameController.text}'
+        .trim();
 
     return SliverAppBar(
       expandedHeight: 260,
@@ -330,41 +492,8 @@ class _AccountScreenState extends State<AccountScreen> {
               children: [
                 const SizedBox(height: 20),
                 GestureDetector(
-                  onTap: _pickImage,
-                  child: Stack(
-                    children: [
-                      Container(
-                        padding: const EdgeInsets.all(4),
-                        decoration: const BoxDecoration(
-                          color: Colors.white,
-                          shape: BoxShape.circle,
-                        ),
-                        child: CircleAvatar(
-                          radius: 50,
-                          backgroundColor: AppColors.grey200,
-                          backgroundImage: _profileImagePath != null
-                              ? FileImage(File(_profileImagePath!))
-                              : null,
-                          child: _profileImagePath == null
-                              ? Icon(Icons.person_rounded, size: 50, color: AppColors.grey400)
-                              : null,
-                        ),
-                      ),
-                      Positioned(
-                        right: 0,
-                        bottom: 0,
-                        child: Container(
-                          padding: const EdgeInsets.all(8),
-                          decoration: BoxDecoration(
-                            color: AppColors.primary,
-                            shape: BoxShape.circle,
-                            border: Border.all(color: Colors.white, width: 2),
-                          ),
-                          child: const Icon(Icons.camera_alt_rounded, color: Colors.white, size: 16),
-                        ),
-                      ),
-                    ],
-                  ),
+                  onTap: _uploadingImage ? null : _pickImage,
+                  child: _buildProfileImage(),
                 ),
                 const SizedBox(height: 14),
                 Text(
@@ -379,12 +508,18 @@ class _AccountScreenState extends State<AccountScreen> {
                 if (_email != null)
                   Text(
                     _email!,
-                    style: TextStyle(color: Colors.white.withValues(alpha: 0.85), fontSize: 14),
+                    style: TextStyle(
+                      color: Colors.white.withValues(alpha: 0.85),
+                      fontSize: 14,
+                    ),
                   ),
                 if (_username != null)
                   Text(
                     '@$_username',
-                    style: TextStyle(color: Colors.white.withValues(alpha: 0.7), fontSize: 13),
+                    style: TextStyle(
+                      color: Colors.white.withValues(alpha: 0.7),
+                      fontSize: 13,
+                    ),
                   ),
               ],
             ),
@@ -399,7 +534,11 @@ class _AccountScreenState extends State<AccountScreen> {
               color: Colors.white,
               borderRadius: BorderRadius.circular(10),
             ),
-            child: Icon(Icons.shield_rounded, color: AppColors.primary, size: 20),
+            child: Icon(
+              Icons.shield_rounded,
+              color: AppColors.primary,
+              size: 20,
+            ),
           ),
           const SizedBox(width: 10),
           const Text(
@@ -423,37 +562,206 @@ class _AccountScreenState extends State<AccountScreen> {
             const SizedBox(height: 16),
             Row(
               children: [
-                Expanded(child: _buildTextField(_firstNameController, 'First Name', Icons.badge_rounded)),
+                Expanded(
+                  child: _buildTextField(
+                    controller: _firstNameController,
+                    label: 'First Name',
+                    icon: Icons.badge_rounded,
+                    hint: 'Juan',
+                    inputFormatters: [
+                      FilteringTextInputFormatter.allow(
+                        RegExp(r"[a-zA-ZÀ-ÿ\s\-\.\']"),
+                      ),
+                    ],
+                    validator: (v) => _validateName(v, 'First name'),
+                  ),
+                ),
                 const SizedBox(width: 12),
-                Expanded(child: _buildTextField(_lastNameController, 'Last Name', Icons.badge_outlined)),
+                Expanded(
+                  child: _buildTextField(
+                    controller: _lastNameController,
+                    label: 'Last Name',
+                    icon: Icons.badge_outlined,
+                    hint: 'Dela Cruz',
+                    inputFormatters: [
+                      FilteringTextInputFormatter.allow(
+                        RegExp(r"[a-zA-ZÀ-ÿ\s\-\.\']"),
+                      ),
+                    ],
+                    validator: (v) => _validateName(v, 'Last name'),
+                  ),
+                ),
               ],
             ),
             _buildTextField(
-              _contactController,
-              'Contact Number',
-              Icons.phone_rounded,
+              controller: _contactController,
+              label: 'Contact Number',
+              icon: Icons.phone_rounded,
               hint: '09XXXXXXXXX',
               keyboardType: TextInputType.phone,
-              inputFormatters: [FilteringTextInputFormatter.digitsOnly, LengthLimitingTextInputFormatter(11)],
+              inputFormatters: [
+                FilteringTextInputFormatter.digitsOnly,
+                LengthLimitingTextInputFormatter(11),
+              ],
               validator: _validateContact,
             ),
             _buildTextField(
-              _birthdayController,
-              'Birthday',
-              Icons.cake_rounded,
+              controller: _birthdayController,
+              label: 'Birthday',
+              icon: Icons.cake_rounded,
               hint: 'YYYY-MM-DD',
               readOnly: true,
               onTap: _pickDate,
             ),
-            _buildDropdown('Gender', Icons.wc_rounded, 'Select gender', ['Male', 'Female', 'Prefer not to say'], _gender, (v) => setState(() => _gender = v)),
-            
+            _buildDropdown(
+              'Gender',
+              Icons.wc_rounded,
+              'Select gender',
+              ['Male', 'Female', 'Prefer not to say'],
+              _gender,
+              (v) => setState(() => _gender = v),
+            ),
             const SizedBox(height: 24),
             _sectionTitle('Address Information'),
             const SizedBox(height: 16),
-            _buildTextField(_addressController, 'Street Address', Icons.home_rounded, hint: '123 Rizal Street'),
-            _buildDropdown('Barangay', Icons.location_on_rounded, 'Select barangay', _barangays, _barangay, (v) => setState(() => _barangay = v)),
-            
+            _buildTextField(
+              controller: _addressController,
+              label: 'Street Address',
+              icon: Icons.home_rounded,
+              hint: '123 Rizal Street',
+            ),
+            _buildDropdown(
+              'Barangay',
+              Icons.location_on_rounded,
+              'Select barangay',
+              _barangays,
+              _barangay,
+              (v) => setState(() => _barangay = v),
+            ),
             const SizedBox(height: 32),
+
+            // ═══════════════════════════════════════════════
+            //  DEBUG BUTTONS — REMOVE AFTER TESTING
+            // ═══════════════════════════════════════════════
+
+            // BUTTON 1 — RED — Test submit without auth
+            SizedBox(
+              width: double.infinity,
+              child: ElevatedButton(
+                onPressed: () async {
+                  await AuthService.instance.logout();
+                  try {
+                    await AuthService.instance.submitReport({
+                      'type': 'Fire',
+                      'description': 'This should be blocked completely',
+                    });
+                    debugPrint('❌ FAIL: submitted without login');
+                  } catch (e) {
+                    debugPrint('✅ PASS: $e');
+                  }
+                },
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: Colors.red,
+                  padding: const EdgeInsets.symmetric(vertical: 14),
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(16),
+                  ),
+                ),
+                child: const Text(
+                  'Test: Submit Without Auth',
+                  style: TextStyle(
+                    color: Colors.white,
+                    fontWeight: FontWeight.bold,
+                  ),
+                ),
+              ),
+            ),
+            const SizedBox(height: 12),
+
+            // BUTTON 2 — ORANGE — Test spoof userId
+            SizedBox(
+              width: double.infinity,
+              child: ElevatedButton(
+                onPressed: () async {
+                  try {
+                    await AuthService.instance.submitReport({
+                      'userId': 'FAKE_USER_123',
+                      'type': 'Fire',
+                      'description': 'Trying to spoof the userId field here',
+                    });
+                    debugPrint(
+                      '✅ Check Firestore — userId should NOT be FAKE_USER_123',
+                    );
+                  } catch (e) {
+                    debugPrint('Blocked: $e');
+                  }
+                },
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: Colors.orange,
+                  padding: const EdgeInsets.symmetric(vertical: 14),
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(16),
+                  ),
+                ),
+                child: const Text(
+                  'Test: Spoof UserId',
+                  style: TextStyle(
+                    color: Colors.white,
+                    fontWeight: FontWeight.bold,
+                  ),
+                ),
+              ),
+            ),
+            const SizedBox(height: 12),
+
+            // BUTTON 3 — PURPLE — Test delete report
+            SizedBox(
+              width: double.infinity,
+              child: ElevatedButton(
+                onPressed: () async {
+                  try {
+                    final db = FirebaseFirestore.instance;
+                    final snap = await db
+                        .collection('reports')
+                        .where(
+                          'userId',
+                          isEqualTo: AuthService.instance.currentUserId,
+                        )
+                        .limit(1)
+                        .get();
+                    if (snap.docs.isNotEmpty) {
+                      await snap.docs.first.reference.delete();
+                      debugPrint('❌ FAIL: deleted a report');
+                    } else {
+                      debugPrint('No reports found — submit a report first');
+                    }
+                  } catch (e) {
+                    debugPrint('✅ PASS: delete blocked — $e');
+                  }
+                },
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: Colors.purple,
+                  padding: const EdgeInsets.symmetric(vertical: 14),
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(16),
+                  ),
+                ),
+                child: const Text(
+                  'Test: Delete Report',
+                  style: TextStyle(
+                    color: Colors.white,
+                    fontWeight: FontWeight.bold,
+                  ),
+                ),
+              ),
+            ),
+            const SizedBox(height: 12),
+
+            // ═══════════════════════════════════════════════
+            // END DEBUG BUTTONS
+            // ═══════════════════════════════════════════════
+
+            // SAVE CHANGES BUTTON
             Container(
               width: double.infinity,
               decoration: BoxDecoration(
@@ -465,12 +773,28 @@ class _AccountScreenState extends State<AccountScreen> {
                 style: ElevatedButton.styleFrom(
                   backgroundColor: AppColors.primary,
                   padding: const EdgeInsets.symmetric(vertical: 16),
-                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(16),
+                  ),
                   elevation: 0,
                 ),
                 child: _saving
-                    ? const SizedBox(height: 20, width: 20, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
-                    : const Text('Save Changes', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: Colors.white)),
+                    ? const SizedBox(
+                        height: 20,
+                        width: 20,
+                        child: CircularProgressIndicator(
+                          strokeWidth: 2,
+                          color: Colors.white,
+                        ),
+                      )
+                    : const Text(
+                        'Save Changes',
+                        style: TextStyle(
+                          fontSize: 16,
+                          fontWeight: FontWeight.bold,
+                          color: Colors.white,
+                        ),
+                      ),
               ),
             ),
             const SizedBox(height: 100),
@@ -491,10 +815,10 @@ class _AccountScreenState extends State<AccountScreen> {
     );
   }
 
-  Widget _buildTextField(
-    TextEditingController controller,
-    String label,
-    IconData icon, {
+  Widget _buildTextField({
+    required TextEditingController controller,
+    required String label,
+    required IconData icon,
     String? hint,
     bool readOnly = false,
     VoidCallback? onTap,
@@ -507,7 +831,10 @@ class _AccountScreenState extends State<AccountScreen> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Text(label, style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 14)),
+          Text(
+            label,
+            style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 14),
+          ),
           const SizedBox(height: 8),
           TextFormField(
             controller: controller,
@@ -526,13 +853,23 @@ class _AccountScreenState extends State<AccountScreen> {
     );
   }
 
-  Widget _buildDropdown(String label, IconData icon, String hint, List<String> items, String? value, ValueChanged<String?> onChanged) {
+  Widget _buildDropdown(
+    String label,
+    IconData icon,
+    String hint,
+    List<String> items,
+    String? value,
+    ValueChanged<String?> onChanged,
+  ) {
     return Padding(
       padding: const EdgeInsets.only(bottom: 16),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Text(label, style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 14)),
+          Text(
+            label,
+            style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 14),
+          ),
           const SizedBox(height: 8),
           Container(
             padding: const EdgeInsets.symmetric(horizontal: 12),
@@ -548,9 +885,16 @@ class _AccountScreenState extends State<AccountScreen> {
                   child: DropdownButtonHideUnderline(
                     child: DropdownButton<String>(
                       value: value,
-                      hint: Text(hint, style: TextStyle(color: AppColors.textHint)),
+                      hint: Text(
+                        hint,
+                        style: TextStyle(color: AppColors.textHint),
+                      ),
                       isExpanded: true,
-                      items: items.map((e) => DropdownMenuItem(value: e, child: Text(e))).toList(),
+                      items: items
+                          .map(
+                            (e) => DropdownMenuItem(value: e, child: Text(e)),
+                          )
+                          .toList(),
                       onChanged: onChanged,
                       dropdownColor: AppColors.surface,
                       borderRadius: BorderRadius.circular(12),

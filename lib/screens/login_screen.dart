@@ -24,6 +24,17 @@ class _LoginScreenState extends State<LoginScreen> {
   bool _obscurePassword = true;
   bool _isLoading = false;
 
+  int _loginAttempts = 0;
+  DateTime? _lockoutEndTime;
+
+  @override
+  void initState() {
+    super.initState();
+    Stream.periodic(const Duration(seconds: 1)).listen((_) {
+      if (_lockoutEndTime != null && mounted) setState(() {});
+    });
+  }
+
   @override
   void dispose() {
     _usernameController.dispose();
@@ -31,28 +42,59 @@ class _LoginScreenState extends State<LoginScreen> {
     super.dispose();
   }
 
+  bool get _isLockedOut {
+    if (_lockoutEndTime == null) return false;
+    if (DateTime.now().isBefore(_lockoutEndTime!)) return true;
+    _loginAttempts = 0;
+    _lockoutEndTime = null;
+    return false;
+  }
+
+  String get _lockoutTimeRemaining {
+    if (_lockoutEndTime == null) return '';
+    final remaining = _lockoutEndTime!.difference(DateTime.now());
+    final minutes = remaining.inMinutes;
+    final seconds = remaining.inSeconds % 60;
+    return '${minutes}m ${seconds}s';
+  }
+
   String? _validateUsername(String? value) {
-    if (value == null || value.isEmpty) {
-      return 'Please enter your username';
-    }
-    if (value.length < 3) {
-      return 'Username must be at least 3 characters';
-    }
+    if (value == null || value.isEmpty) return 'Please enter your username';
+    if (value.length < 3) return 'Username must be at least 3 characters';
     return null;
   }
 
   String? _validatePassword(String? value) {
-    if (value == null || value.isEmpty) {
-      return 'Please enter your password';
-    }
-    if (value.length < 6) {
-      return 'Password must be at least 6 characters';
-    }
+    if (value == null || value.isEmpty) return 'Please enter your password';
+    if (value.length < 6) return 'Password must be at least 6 characters';
     return null;
   }
 
   Future<void> _login() async {
-    if (!_formKey.currentState!.validate()) return;
+    if (_isLockedOut) {
+      Get.snackbar(
+        'Too Many Attempts',
+        'Please wait $_lockoutTimeRemaining before trying again',
+        backgroundColor: AppColors.error,
+        colorText: Colors.white,
+        icon: const Icon(Icons.lock_clock, color: Colors.white),
+        duration: const Duration(seconds: 4),
+        margin: const EdgeInsets.all(16),
+      );
+      return;
+    }
+
+    if (!_formKey.currentState!.validate()) {
+      Get.snackbar(
+        'Missing Information',
+        'Please fill in all fields correctly',
+        backgroundColor: AppColors.error,
+        colorText: Colors.white,
+        icon: const Icon(Icons.error_outline, color: Colors.white),
+        margin: const EdgeInsets.all(16),
+      );
+      return;
+    }
 
     setState(() => _isLoading = true);
 
@@ -61,16 +103,37 @@ class _LoginScreenState extends State<LoginScreen> {
     final uid = await AuthService.instance.login(username, password);
 
     if (uid == null) {
-      setState(() => _isLoading = false);
-      Get.snackbar(
-        'Error',
-        'Invalid username or password',
-        backgroundColor: AppColors.error,
-        colorText: Colors.white,
-        icon: const Icon(Icons.error_outline, color: Colors.white),
-      );
+      _loginAttempts++;
+
+      if (_loginAttempts >= 5) {
+        _lockoutEndTime = DateTime.now().add(const Duration(minutes: 10));
+        setState(() => _isLoading = false);
+        Get.snackbar(
+          'Account Temporarily Locked',
+          'Too many failed attempts. Try again in 10 minutes.',
+          backgroundColor: AppColors.error,
+          colorText: Colors.white,
+          icon: const Icon(Icons.lock, color: Colors.white),
+          duration: const Duration(seconds: 5),
+          margin: const EdgeInsets.all(16),
+        );
+      } else {
+        final remaining = 5 - _loginAttempts;
+        setState(() => _isLoading = false);
+        Get.snackbar(
+          'Login Failed',
+          'Invalid username or password. $remaining attempt${remaining == 1 ? '' : 's'} remaining.',
+          backgroundColor: AppColors.error,
+          colorText: Colors.white,
+          icon: const Icon(Icons.error_outline, color: Colors.white),
+          margin: const EdgeInsets.all(16),
+        );
+      }
       return;
     }
+
+    _loginAttempts = 0;
+    _lockoutEndTime = null;
 
     final user = await AuthService.instance.getUser(uid);
     final emailVerified = user?[Schema.emailVerified] ?? false;
@@ -114,11 +177,8 @@ class _LoginScreenState extends State<LoginScreen> {
                 child: Column(
                   mainAxisAlignment: MainAxisAlignment.center,
                   children: [
-                    // Logo
                     _buildLogo(),
                     const SizedBox(height: 40),
-
-                    // Login card
                     Container(
                       padding: const EdgeInsets.all(24),
                       decoration: BoxDecoration(
@@ -146,8 +206,6 @@ class _LoginScreenState extends State<LoginScreen> {
                             ),
                           ),
                           const SizedBox(height: 24),
-
-                          // Username field
                           _buildTextField(
                             controller: _usernameController,
                             label: 'Username',
@@ -156,8 +214,6 @@ class _LoginScreenState extends State<LoginScreen> {
                             validator: _validateUsername,
                           ),
                           const SizedBox(height: 16),
-
-                          // Password field
                           _buildTextField(
                             controller: _passwordController,
                             label: 'Password',
@@ -178,7 +234,40 @@ class _LoginScreenState extends State<LoginScreen> {
                             ),
                           ),
 
-                          // Forgot password
+                          // Lockout banner
+                          if (_isLockedOut) ...[
+                            const SizedBox(height: 8),
+                            Container(
+                              padding: const EdgeInsets.all(12),
+                              decoration: BoxDecoration(
+                                color: AppColors.error.withValues(alpha: 0.1),
+                                borderRadius: BorderRadius.circular(12),
+                                border: Border.all(
+                                  color: AppColors.error.withValues(alpha: 0.3),
+                                ),
+                              ),
+                              child: Row(
+                                children: [
+                                  Icon(
+                                    Icons.lock_clock,
+                                    color: AppColors.error,
+                                    size: 20,
+                                  ),
+                                  const SizedBox(width: 8),
+                                  Expanded(
+                                    child: Text(
+                                      'Too many attempts. Wait $_lockoutTimeRemaining',
+                                      style: TextStyle(
+                                        color: AppColors.error,
+                                        fontSize: 13,
+                                      ),
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ),
+                          ],
+
                           Align(
                             alignment: Alignment.centerRight,
                             child: TextButton(
@@ -194,17 +283,12 @@ class _LoginScreenState extends State<LoginScreen> {
                             ),
                           ),
                           const SizedBox(height: 8),
-
-                          // Sign in button
                           _buildPrimaryButton(
                             label: 'Sign In',
                             isLoading: _isLoading,
                             onPressed: _login,
                           ),
-
                           const SizedBox(height: 24),
-
-                          // Divider
                           Row(
                             children: [
                               Expanded(
@@ -228,8 +312,6 @@ class _LoginScreenState extends State<LoginScreen> {
                             ],
                           ),
                           const SizedBox(height: 24),
-
-                          // Social buttons
                           Row(
                             mainAxisAlignment: MainAxisAlignment.center,
                             children: [
@@ -255,10 +337,7 @@ class _LoginScreenState extends State<LoginScreen> {
                         ],
                       ),
                     ),
-
                     const SizedBox(height: 24),
-
-                    // Sign up link
                     Row(
                       mainAxisAlignment: MainAxisAlignment.center,
                       children: [

@@ -3,6 +3,8 @@ import 'package:flutter/material.dart';
 import 'package:get/get.dart';
 import 'package:image_picker/image_picker.dart';
 import '../services/emergency_ai_service.dart';
+import '../services/location_service.dart';
+import '../services/cloudinary_service.dart';
 import '../constants/app_colors.dart';
 import '../services/auth_service.dart';
 
@@ -13,12 +15,21 @@ class ReportScreen extends StatefulWidget {
 }
 
 class _ReportScreenState extends State<ReportScreen> {
+  final _formKey = GlobalKey<FormState>();
   final _descriptionController = TextEditingController();
+
   String? _imagePath;
   bool _analyzing = false;
   bool _submitting = false;
-  String? _aiResult;
+  bool _fetchingLocation = false;
+  String? _uploadStatus; // ✅ Shows upload progress to user
+
+  AIClassificationResult? _aiResult;
+  LocationResult? _locationResult;
+  String? _locationError;
+
   String _selectedType = 'Accident';
+  String? _manualOverrideType;
 
   final List<String> _incidentTypes = [
     'Accident',
@@ -32,8 +43,8 @@ class _ReportScreenState extends State<ReportScreen> {
   @override
   void initState() {
     super.initState();
-    // Preload the model so first analysis is faster
     EmergencyAIService.instance.init();
+    _fetchLocation();
   }
 
   @override
@@ -41,6 +52,104 @@ class _ReportScreenState extends State<ReportScreen> {
     _descriptionController.dispose();
     super.dispose();
   }
+
+  // ─── Location ───────────────────────────────────────────────────────────────
+
+  Future<void> _fetchLocation() async {
+    setState(() {
+      _fetchingLocation = true;
+      _locationError = null;
+    });
+
+    final permanentlyDenied = await LocationService.instance
+        .isPermissionPermanentlyDenied();
+
+    if (permanentlyDenied) {
+      setState(() {
+        _fetchingLocation = false;
+        _locationError = 'Location permission permanently denied.';
+      });
+      _showLocationSettingsDialog();
+      return;
+    }
+
+    final result = await LocationService.instance.getCurrentLocation();
+
+    setState(() {
+      _fetchingLocation = false;
+      _locationResult = result;
+      if (result == null) {
+        _locationError = 'Could not get location. Please enable GPS.';
+      } else if (!result.isInDagupan) {
+        _locationError =
+            'You must be within Dagupan City, Pangasinan to submit a report.';
+      } else {
+        _locationError = null;
+      }
+    });
+  }
+
+  void _showLocationSettingsDialog() {
+    showDialog(
+      context: context,
+      builder: (_) => AlertDialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+        title: const Text('Location Required'),
+        content: const Text(
+          'Location permission is permanently denied.\n\n'
+          'Please enable it in your device settings to submit a report.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('Cancel'),
+          ),
+          ElevatedButton(
+            style: ElevatedButton.styleFrom(backgroundColor: AppColors.primary),
+            onPressed: () {
+              Navigator.pop(context);
+              LocationService.instance.openLocationSettings();
+            },
+            child: const Text(
+              'Open Settings',
+              style: TextStyle(color: Colors.white),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  // ─── Validators ─────────────────────────────────────────────────────────────
+
+  String? _validateImage() {
+    if (_imagePath == null) return 'A photo is required to submit a report';
+    return null;
+  }
+
+  String? _validateDescription(String? value) {
+    if (value == null || value.trim().isEmpty) {
+      return 'Please describe what is happening';
+    }
+    if (value.trim().length < 20) {
+      return 'Description is too short — please provide more detail';
+    }
+    if (RegExp(r'[<>{}\[\]\\]').hasMatch(value)) {
+      return 'Description contains invalid characters';
+    }
+    return null;
+  }
+
+  String? _validateOverride(String? value) {
+    if (_aiResult != null &&
+        _aiResult!.requiresManualOverride &&
+        _manualOverrideType == null) {
+      return 'AI confidence is low — please select the correct type';
+    }
+    return null;
+  }
+
+  // ─── Image & AI ─────────────────────────────────────────────────────────────
 
   Future<void> _pickImage(ImageSource source) async {
     final picker = ImagePicker();
@@ -54,78 +163,50 @@ class _ReportScreenState extends State<ReportScreen> {
       setState(() {
         _imagePath = image.path;
         _aiResult = null;
+        _manualOverrideType = null;
+        _uploadStatus = null;
       });
       await _analyzeWithAI();
     }
   }
 
-  // ✅ TFLite emergency classifier (replaces ML Kit ImageLabeler)
   Future<void> _analyzeWithAI() async {
     if (_imagePath == null) return;
-
     setState(() => _analyzing = true);
 
     try {
-      final res = await EmergencyAIService.instance.classifyImageFile(
+      final result = await EmergencyAIService.instance.classifyImage(
         _imagePath!,
       );
-
-      String detectedType = (res['label'] as String?) ?? 'Others';
-      final double conf = (res['confidence'] as double?) ?? 0.0;
-
-      // Confidence gate: if model is unsure, do not auto-force
-      final bool confident = conf >= 0.60;
-      if (!confident) detectedType = 'Others';
-
-      // Update selected type only if valid
-      if (_incidentTypes.contains(detectedType)) {
-        _selectedType = detectedType;
-      } else {
-        _selectedType = 'Others';
-        detectedType = 'Others';
-      }
-
-      // Severity logic (tweak if you want)
-      String severity = 'Medium';
-      if (detectedType == 'Fire' || detectedType == 'Flood') {
-        severity = 'High';
-      } else if (detectedType == 'Accident' ||
-          detectedType == 'Medical Emergency') {
-        severity = 'High';
-      } else if (detectedType == 'Crime') {
-        severity = 'Medium';
-      } else {
-        severity = 'Low';
-      }
-
-      final description = confident
-          ? 'AI detected: $detectedType (${(conf * 100).toStringAsFixed(0)}%). Please verify the incident type before submitting.'
-          : 'AI is not confident (${(conf * 100).toStringAsFixed(0)}%). Please select the incident type manually and describe what happened.';
-
-      final result =
-          'Type: $detectedType\nDescription: $description\nSeverity: $severity';
-
       setState(() {
         _aiResult = result;
         _analyzing = false;
+        if (!result.requiresManualOverride &&
+            _incidentTypes.contains(result.category)) {
+          _selectedType = result.category;
+        }
+        _descriptionController.text = result.description;
       });
-
-      _descriptionController.text = description;
     } catch (e) {
       debugPrint('TFLite error: $e');
       setState(() {
         _analyzing = false;
-        _aiResult =
+        _aiResult = null;
+        _descriptionController.text =
             'Could not analyze image. Please describe the incident manually.';
       });
     }
   }
 
+  // ─── Submit ──────────────────────────────────────────────────────────────────
+
   Future<void> _submitReport() async {
-    if (_imagePath == null && _descriptionController.text.isEmpty) {
+    // 1. Validate image
+    final imageError = _validateImage();
+    if (imageError != null) {
       Get.snackbar(
-        'Required',
-        'Please add a photo or description',
+        'Photo Required',
+        imageError,
         backgroundColor: AppColors.error,
         colorText: Colors.white,
         margin: const EdgeInsets.all(16),
@@ -133,26 +214,71 @@ class _ReportScreenState extends State<ReportScreen> {
       return;
     }
 
-    setState(() => _submitting = true);
+    // 2. Validate location
+    if (_locationResult == null || !_locationResult!.isInDagupan) {
+      Get.snackbar(
+        'Location Required',
+        _locationError ?? 'You must be within Dagupan City to submit a report.',
+        backgroundColor: AppColors.error,
+        colorText: Colors.white,
+        margin: const EdgeInsets.all(16),
+        duration: const Duration(seconds: 4),
+      );
+      return;
+    }
+
+    // 3. Validate form fields
+    if (!(_formKey.currentState?.validate() ?? false)) return;
+
+    setState(() {
+      _submitting = true;
+      _uploadStatus = 'Uploading photo...'; // ✅ Show upload progress
+    });
 
     try {
-      final uid = AuthService.instance.currentUserId;
+      // ✅ Step 1: Upload image to Cloudinary first
+      String? imageUrl;
+      if (_imagePath != null) {
+        imageUrl = await CloudinaryService.instance.uploadImage(_imagePath!);
+        if (imageUrl == null) {
+          // ✅ Upload failed — warn user but still allow submit without image URL
+          setState(() => _uploadStatus = null);
+          final continueAnyway = await _showUploadFailedDialog();
+          if (!continueAnyway) {
+            setState(() => _submitting = false);
+            return;
+          }
+        } else {
+          setState(() => _uploadStatus = 'Submitting report...');
+        }
+      }
 
+      final finalType = _manualOverrideType ?? _selectedType;
+      final sanitizedDesc = _descriptionController.text.trim().replaceAll(
+        RegExp(r'[<>{}\[\]\\]'),
+        '',
+      );
+
+      // ✅ Step 2: Submit to Firestore with Cloudinary URL (not local path)
       await AuthService.instance.submitReport({
-        'userId': uid,
-        'type': _selectedType,
-        'description': _descriptionController.text.trim(),
-        'aiAnalysis': _aiResult,
-        'imagePath': _imagePath,
-        'location': 'Dagupan City, Pangasinan',
+        'userId': AuthService.instance.currentUserId,
+        'type': finalType,
+        'description': sanitizedDesc,
+        'aiCategory': _aiResult?.category,
+        'aiConfidence': _aiResult?.confidence,
+        'aiOverriddenByUser': _manualOverrideType != null,
+        'imageUrl': imageUrl, // ✅ Cloudinary URL or null
+        'location': _locationResult!.toMap(), // ✅ Proper map with lat/lng
         'status': 'pending',
         'createdAt': DateTime.now().toUtc().toIso8601String(),
       });
 
-      setState(() => _submitting = false);
+      setState(() {
+        _submitting = false;
+        _uploadStatus = null;
+      });
 
       Get.back();
-
       Get.snackbar(
         'Report Submitted',
         'Your report has been sent to authorities',
@@ -161,7 +287,10 @@ class _ReportScreenState extends State<ReportScreen> {
         margin: const EdgeInsets.all(16),
       );
     } catch (e) {
-      setState(() => _submitting = false);
+      setState(() {
+        _submitting = false;
+        _uploadStatus = null;
+      });
       Get.snackbar(
         'Error',
         'Failed to submit report. Try again.',
@@ -172,33 +301,166 @@ class _ReportScreenState extends State<ReportScreen> {
     }
   }
 
+  // ✅ Ask user if they want to continue without photo URL
+  Future<bool> _showUploadFailedDialog() async {
+    return await showDialog<bool>(
+          context: context,
+          builder: (_) => AlertDialog(
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(16),
+            ),
+            title: const Text('Photo Upload Failed'),
+            content: const Text(
+              'The photo could not be uploaded.\n\n'
+              'You can still submit the report without the photo, '
+              'or cancel and try again.',
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(context, false),
+                child: const Text('Cancel'),
+              ),
+              ElevatedButton(
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: AppColors.primary,
+                ),
+                onPressed: () => Navigator.pop(context, true),
+                child: const Text(
+                  'Submit Anyway',
+                  style: TextStyle(color: Colors.white),
+                ),
+              ),
+            ],
+          ),
+        ) ??
+        false;
+  }
+
+  // ─── Build ───────────────────────────────────────────────────────────────────
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       backgroundColor: AppColors.background,
-      body: Column(
-        children: [
-          _buildHeader(context),
-          Expanded(
-            child: SingleChildScrollView(
-              padding: const EdgeInsets.all(20),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  _buildPhotoSection(),
-                  const SizedBox(height: 20),
-                  if (_aiResult != null) _buildAIResult(),
-                  const SizedBox(height: 20),
-                  _buildIncidentTypeSelector(),
-                  const SizedBox(height: 20),
-                  _buildDescriptionField(),
-                  const SizedBox(height: 32),
-                  _buildSubmitButton(),
-                  const SizedBox(height: 40),
-                ],
+      body: Form(
+        key: _formKey,
+        child: Column(
+          children: [
+            _buildHeader(context),
+            Expanded(
+              child: SingleChildScrollView(
+                padding: const EdgeInsets.all(20),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    _buildLocationBanner(),
+                    const SizedBox(height: 16),
+                    _buildPhotoSection(),
+                    const SizedBox(height: 20),
+                    if (_aiResult != null) _buildAIResult(),
+                    const SizedBox(height: 20),
+                    _buildIncidentTypeSelector(),
+                    const SizedBox(height: 20),
+                    _buildDescriptionField(),
+                    const SizedBox(height: 32),
+                    _buildSubmitButton(),
+                    const SizedBox(height: 40),
+                  ],
+                ),
               ),
             ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildLocationBanner() {
+    if (_fetchingLocation) {
+      return _locationBannerTile(
+        icon: Icons.location_searching_rounded,
+        color: Colors.blue,
+        title: 'Getting your location...',
+        subtitle: 'Please wait',
+        trailing: const SizedBox(
+          width: 18,
+          height: 18,
+          child: CircularProgressIndicator(strokeWidth: 2, color: Colors.blue),
+        ),
+      );
+    }
+
+    if (_locationError != null) {
+      return _locationBannerTile(
+        icon: Icons.location_off_rounded,
+        color: AppColors.error,
+        title: 'Location unavailable',
+        subtitle: _locationError!,
+        trailing: TextButton(
+          onPressed: _fetchLocation,
+          child: const Text('Retry', style: TextStyle(fontSize: 12)),
+        ),
+      );
+    }
+
+    if (_locationResult != null && _locationResult!.isInDagupan) {
+      return _locationBannerTile(
+        icon: Icons.location_on_rounded,
+        color: AppColors.success,
+        title: 'Location verified',
+        subtitle: 'Dagupan City, Pangasinan, Philippines',
+        trailing: const Icon(
+          Icons.check_circle_rounded,
+          color: AppColors.success,
+          size: 20,
+        ),
+      );
+    }
+
+    return const SizedBox.shrink();
+  }
+
+  Widget _locationBannerTile({
+    required IconData icon,
+    required Color color,
+    required String title,
+    required String subtitle,
+    Widget? trailing,
+  }) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+      decoration: BoxDecoration(
+        color: color.withValues(alpha: 0.08),
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: color.withValues(alpha: 0.3)),
+      ),
+      child: Row(
+        children: [
+          Icon(icon, color: color, size: 22),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  title,
+                  style: TextStyle(
+                    fontWeight: FontWeight.bold,
+                    fontSize: 13,
+                    color: color,
+                  ),
+                ),
+                Text(
+                  subtitle,
+                  style: TextStyle(
+                    fontSize: 11,
+                    color: AppColors.textSecondary,
+                  ),
+                ),
+              ],
+            ),
           ),
+          if (trailing != null) trailing,
         ],
       ),
     );
@@ -247,7 +509,7 @@ class _ReportScreenState extends State<ReportScreen> {
                   ),
                 ),
                 Text(
-                  'AI-powered incident detection',
+                  'Dagupan City, Pangasinan only',
                   style: TextStyle(color: Colors.white70, fontSize: 13),
                 ),
               ],
@@ -270,13 +532,19 @@ class _ReportScreenState extends State<ReportScreen> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        const Text(
-          'Photo Evidence',
-          style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
+        Row(
+          children: [
+            const Text(
+              'Photo Evidence',
+              style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
+            ),
+            const SizedBox(width: 6),
+            Text('*', style: TextStyle(color: AppColors.error, fontSize: 16)),
+          ],
         ),
         const SizedBox(height: 12),
         GestureDetector(
-          onTap: () => _showImageSourceDialog(),
+          onTap: _showImageSourceDialog,
           child: Container(
             width: double.infinity,
             height: 220,
@@ -378,6 +646,15 @@ class _ReportScreenState extends State<ReportScreen> {
                           fontSize: 13,
                         ),
                       ),
+                      const SizedBox(height: 4),
+                      Text(
+                        'Photo is required',
+                        style: TextStyle(
+                          color: AppColors.error,
+                          fontSize: 12,
+                          fontStyle: FontStyle.italic,
+                        ),
+                      ),
                     ],
                   ),
           ),
@@ -387,14 +664,13 @@ class _ReportScreenState extends State<ReportScreen> {
   }
 
   Widget _buildAIResult() {
-    final severityMatch = RegExp(
-      r'Severity:\s*(\w+)',
-    ).firstMatch(_aiResult ?? '');
-    final severity = severityMatch?.group(1) ?? 'Unknown';
-
-    final severityColor = severity == 'High'
+    final result = _aiResult!;
+    final severityColor = result.severity == 'High'
         ? AppColors.error
-        : severity == 'Medium'
+        : result.severity == 'Medium'
+        ? Colors.orange
+        : AppColors.success;
+    final confidenceColor = result.requiresManualOverride
         ? Colors.orange
         : AppColors.success;
 
@@ -431,7 +707,7 @@ class _ReportScreenState extends State<ReportScreen> {
                   borderRadius: BorderRadius.circular(20),
                 ),
                 child: Text(
-                  severity,
+                  result.severity,
                   style: const TextStyle(
                     color: Colors.white,
                     fontSize: 12,
@@ -441,15 +717,112 @@ class _ReportScreenState extends State<ReportScreen> {
               ),
             ],
           ),
-          const SizedBox(height: 8),
+          const SizedBox(height: 10),
+          Row(
+            children: [
+              Text(
+                'Confidence: ',
+                style: TextStyle(fontSize: 12, color: AppColors.textSecondary),
+              ),
+              Expanded(
+                child: ClipRRect(
+                  borderRadius: BorderRadius.circular(4),
+                  child: LinearProgressIndicator(
+                    value: result.confidence,
+                    backgroundColor: AppColors.grey300,
+                    color: confidenceColor,
+                    minHeight: 6,
+                  ),
+                ),
+              ),
+              const SizedBox(width: 8),
+              Text(
+                result.confidenceLabel,
+                style: TextStyle(
+                  fontSize: 12,
+                  fontWeight: FontWeight.bold,
+                  color: confidenceColor,
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 10),
           Text(
-            _aiResult ?? '',
+            result.description,
             style: TextStyle(
               color: AppColors.textSecondary,
               fontSize: 13,
               height: 1.5,
             ),
           ),
+          if (result.requiresManualOverride) ...[
+            const SizedBox(height: 12),
+            Container(
+              padding: const EdgeInsets.all(10),
+              decoration: BoxDecoration(
+                color: Colors.orange.withValues(alpha: 0.1),
+                borderRadius: BorderRadius.circular(10),
+                border: Border.all(color: Colors.orange.withValues(alpha: 0.4)),
+              ),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    children: [
+                      const Icon(
+                        Icons.warning_amber_rounded,
+                        color: Colors.orange,
+                        size: 16,
+                      ),
+                      const SizedBox(width: 6),
+                      const Text(
+                        'Manual override required',
+                        style: TextStyle(
+                          fontWeight: FontWeight.bold,
+                          fontSize: 13,
+                          color: Colors.orange,
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 8),
+                  DropdownButtonFormField<String>(
+                    value: _manualOverrideType,
+                    decoration: InputDecoration(
+                      labelText: 'Select correct incident type *',
+                      labelStyle: const TextStyle(fontSize: 13),
+                      filled: true,
+                      fillColor: AppColors.surface,
+                      border: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(10),
+                        borderSide: BorderSide(
+                          color: Colors.orange.withValues(alpha: 0.5),
+                        ),
+                      ),
+                      enabledBorder: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(10),
+                        borderSide: BorderSide(
+                          color: Colors.orange.withValues(alpha: 0.5),
+                        ),
+                      ),
+                      contentPadding: const EdgeInsets.symmetric(
+                        horizontal: 12,
+                        vertical: 10,
+                      ),
+                    ),
+                    items: _incidentTypes
+                        .map((t) => DropdownMenuItem(value: t, child: Text(t)))
+                        .toList(),
+                    validator: _validateOverride,
+                    onChanged: (val) => setState(() {
+                      _manualOverrideType = val;
+                      if (val != null) _selectedType = val;
+                    }),
+                  ),
+                ],
+              ),
+            ),
+          ],
         ],
       ),
     );
@@ -470,7 +843,10 @@ class _ReportScreenState extends State<ReportScreen> {
           children: _incidentTypes.map((type) {
             final isSelected = _selectedType == type;
             return GestureDetector(
-              onTap: () => setState(() => _selectedType = type),
+              onTap: () => setState(() {
+                _selectedType = type;
+                if (_manualOverrideType != null) _manualOverrideType = type;
+              }),
               child: Container(
                 padding: const EdgeInsets.symmetric(
                   horizontal: 16,
@@ -531,6 +907,7 @@ class _ReportScreenState extends State<ReportScreen> {
         TextFormField(
           controller: _descriptionController,
           maxLines: 4,
+          validator: _validateDescription,
           decoration: InputDecoration(
             hintText: 'Describe what is happening...',
             filled: true,
@@ -543,6 +920,23 @@ class _ReportScreenState extends State<ReportScreen> {
               borderRadius: BorderRadius.circular(16),
               borderSide: const BorderSide(color: AppColors.primary, width: 2),
             ),
+            errorBorder: OutlineInputBorder(
+              borderRadius: BorderRadius.circular(16),
+              borderSide: BorderSide(color: AppColors.error, width: 1.5),
+            ),
+          ),
+        ),
+        const SizedBox(height: 4),
+        ValueListenableBuilder<TextEditingValue>(
+          valueListenable: _descriptionController,
+          builder: (_, value, __) => Text(
+            '${value.text.trim().length} characters (min 20)',
+            style: TextStyle(
+              fontSize: 11,
+              color: value.text.trim().length >= 20
+                  ? AppColors.success
+                  : AppColors.textSecondary,
+            ),
           ),
         ),
       ],
@@ -550,12 +944,15 @@ class _ReportScreenState extends State<ReportScreen> {
   }
 
   Widget _buildSubmitButton() {
+    final locationOk = _locationResult != null && _locationResult!.isInDagupan;
+
     return SizedBox(
       width: double.infinity,
       child: ElevatedButton(
-        onPressed: _submitting ? null : _submitReport,
+        onPressed: (_submitting || !locationOk) ? null : _submitReport,
         style: ElevatedButton.styleFrom(
           backgroundColor: AppColors.primary,
+          disabledBackgroundColor: AppColors.grey300,
           padding: const EdgeInsets.symmetric(vertical: 16),
           shape: RoundedRectangleBorder(
             borderRadius: BorderRadius.circular(16),
@@ -563,25 +960,41 @@ class _ReportScreenState extends State<ReportScreen> {
           elevation: 0,
         ),
         child: _submitting
-            ? const SizedBox(
-                height: 20,
-                width: 20,
-                child: CircularProgressIndicator(
-                  strokeWidth: 2,
-                  color: Colors.white,
-                ),
-              )
-            : const Row(
+            ? Row(
                 mainAxisAlignment: MainAxisAlignment.center,
                 children: [
-                  Icon(Icons.send_rounded, color: Colors.white),
-                  SizedBox(width: 8),
+                  const SizedBox(
+                    height: 20,
+                    width: 20,
+                    child: CircularProgressIndicator(
+                      strokeWidth: 2,
+                      color: Colors.white,
+                    ),
+                  ),
+                  const SizedBox(width: 12),
+                  // ✅ Shows "Uploading photo..." then "Submitting report..."
                   Text(
-                    'Submit Report',
+                    _uploadStatus ?? 'Submitting...',
+                    style: const TextStyle(color: Colors.white, fontSize: 14),
+                  ),
+                ],
+              )
+            : Row(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  Icon(
+                    Icons.send_rounded,
+                    color: locationOk ? Colors.white : AppColors.grey500,
+                  ),
+                  const SizedBox(width: 8),
+                  Text(
+                    locationOk
+                        ? 'Submit Report'
+                        : 'Location required to submit',
                     style: TextStyle(
                       fontSize: 16,
                       fontWeight: FontWeight.bold,
-                      color: Colors.white,
+                      color: locationOk ? Colors.white : AppColors.grey500,
                     ),
                   ),
                 ],

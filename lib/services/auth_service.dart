@@ -12,13 +12,9 @@ class AuthService {
 
   static String _now() => DateTime.now().toUtc().toIso8601String();
 
-  /// Current logged-in user id
   String? get currentUserId => _auth.currentUser?.uid;
-
-  /// Kept for compatibility with existing screens
   set currentUserId(String? value) {}
 
-  /// Check if email looks like a real email (not a test/dummy)
   static bool isRealEmail(String email) {
     final lower = email.toLowerCase();
     return !lower.contains('test') &&
@@ -28,7 +24,15 @@ class AuthService {
         !lower.contains('example.com');
   }
 
-  /// Login with username — looks up email from Firestore then signs in
+  Future<String?> getAuthToken() async {
+    try {
+      return await _auth.currentUser?.getIdToken(true);
+    } catch (e) {
+      debugPrint('Token fetch error: $e');
+      return null;
+    }
+  }
+
   Future<String?> login(String username, String password) async {
     try {
       final q = await _db
@@ -40,14 +44,12 @@ class AuthService {
 
       final data = q.docs.first.data();
       final email = data[Schema.email];
-
       if (email == null || email.toString().isEmpty) return null;
 
       final result = await _auth.signInWithEmailAndPassword(
         email: email.toString().trim(),
         password: password.trim(),
       );
-
       return result.user?.uid;
     } catch (e) {
       debugPrint('Login error: $e');
@@ -55,7 +57,6 @@ class AuthService {
     }
   }
 
-  /// Simple signup with email, username, password
   Future<String?> signUp({
     required String email,
     required String username,
@@ -86,18 +87,13 @@ class AuthService {
         Schema.updatedAt: _now(),
       });
 
-      // Send Firebase verification email if real email
-      if (isRealEmail(email)) {
-        await result.user!.sendEmailVerification();
-      }
-
+      if (isRealEmail(email)) await result.user!.sendEmailVerification();
       return uid;
     } catch (e) {
       return null;
     }
   }
 
-  /// Signup with full profile info
   Future<String?> signUpWithProfile({
     required String email,
     required String username,
@@ -142,11 +138,7 @@ class AuthService {
         Schema.updatedAt: _now(),
       });
 
-      // Send Firebase verification email if real email
-      if (isRealEmail(email)) {
-        await result.user!.sendEmailVerification();
-      }
-
+      if (isRealEmail(email)) await result.user!.sendEmailVerification();
       return uid;
     } catch (e) {
       debugPrint('Signup error: $e');
@@ -154,7 +146,6 @@ class AuthService {
     }
   }
 
-  /// Forgot password — sends reset email via Firebase
   Future<bool> forgotPassword(String email) async {
     try {
       await _auth.sendPasswordResetEmail(email: email);
@@ -164,7 +155,6 @@ class AuthService {
     }
   }
 
-  /// Check if Firebase has verified the current user's email
   Future<bool> checkFirebaseEmailVerified() async {
     try {
       await _auth.currentUser?.reload();
@@ -174,20 +164,17 @@ class AuthService {
     }
   }
 
-  /// Mark email as verified in Firestore
   Future<void> markEmailVerified(String userId) async {
     await _db.collection(Schema.users).doc(userId).update({
       Schema.emailVerified: true,
     });
   }
 
-  /// Get profile map for user
   Future<Map<String, dynamic>?> getProfile(String userId) async {
     final snap = await _db.collection(Schema.userProfiles).doc(userId).get();
     return snap.data();
   }
 
-  /// Update profile fields
   Future<void> updateProfile(String userId, Map<String, dynamic> data) async {
     data[Schema.updatedAt] = _now();
     await _db
@@ -196,7 +183,6 @@ class AuthService {
         .set(data, SetOptions(merge: true));
   }
 
-  /// Update user document fields
   Future<void> updateUser(String userId, Map<String, dynamic> data) async {
     await _db
         .collection(Schema.users)
@@ -204,35 +190,89 @@ class AuthService {
         .set(data, SetOptions(merge: true));
   }
 
-  /// Get user document data
   Future<Map<String, dynamic>?> getUser(String userId) async {
     final snap = await _db.collection(Schema.users).doc(userId).get();
     return snap.data();
   }
 
-  /// Logout
   Future<void> logout() async {
     await _auth.signOut();
   }
 
-  /// No longer needed — kept for compatibility but does nothing
   Future<void> seedDummyDataIfEmpty() async {}
 
+  /// ✅ MITIGATION: Secure report submission
   Future<void> submitReport(Map<String, dynamic> data) async {
-    await _db.collection('reports').add(data);
+    // ✅ Reject if not logged in
+    final user = _auth.currentUser;
+    if (user == null) {
+      throw Exception(
+        'Unauthorized: user must be logged in to submit a report',
+      );
+    }
+
+    // ✅ Validate required fields
+    final type = data['type']?.toString().trim();
+    final description = data['description']?.toString().trim();
+
+    if (type == null || type.isEmpty) {
+      throw Exception('Validation: incident type is required');
+    }
+    if (description == null || description.length < 20) {
+      throw Exception('Validation: description must be at least 20 characters');
+    }
+
+    // ✅ Sanitize string fields
+    String sanitize(dynamic val) =>
+        val?.toString().replaceAll(RegExp(r'[<>{}\[\]\\]'), '').trim() ?? '';
+
+    // ✅ FIX: location stored as a proper map — not a string
+    // Accepts either a Map (from LocationResult.toMap()) or falls back safely
+    Map<String, dynamic> safeLocation = {};
+    final rawLocation = data['location'];
+    if (rawLocation is Map<String, dynamic>) {
+      safeLocation = {
+        'latitude': rawLocation['latitude'] is double
+            ? rawLocation['latitude']
+            : null,
+        'longitude': rawLocation['longitude'] is double
+            ? rawLocation['longitude']
+            : null,
+        'address': sanitize(rawLocation['address']),
+        'city': sanitize(rawLocation['city']),
+      };
+    }
+
+    // ✅ FIX: imageUrl from Cloudinary stored — NO local imagePath
+    // imageUrl is null if upload failed — report still saved without it
+    final imageUrl = data['imageUrl']?.toString();
+
+    final safeData = {
+      'userId': user.uid, // ✅ Always from auth token
+      'type': sanitize(data['type']),
+      'description': sanitize(data['description']),
+      'aiCategory': sanitize(data['aiCategory']),
+      'aiConfidence': data['aiConfidence'] is double
+          ? (data['aiConfidence'] as double).clamp(0.0, 1.0)
+          : null,
+      'aiOverriddenByUser': data['aiOverriddenByUser'] == true,
+      'imageUrl': imageUrl, // ✅ Cloudinary URL (not local path)
+      'imageUploaded': imageUrl != null, // ✅ Flag if upload succeeded
+      'location': safeLocation, // ✅ Proper map with lat/lng fields
+      'status': 'pending',
+      'createdAt': _now(),
+    };
+
+    await _db.collection('reports').add(safeData);
   }
 
-  /// Resend Firebase verification email
   Future<void> resendVerificationEmail() async {
     await _auth.currentUser?.sendEmailVerification();
   }
 
   Future<void> deleteAccount(String userId) async {
-    // Delete from Firestore
     await _db.collection(Schema.users).doc(userId).delete();
     await _db.collection(Schema.userProfiles).doc(userId).delete();
-
-    // Delete from Firebase Auth
     await _auth.currentUser?.delete();
   }
 }

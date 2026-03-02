@@ -18,7 +18,6 @@ class _SignupScreenState extends State<SignupScreen> {
   final _pageController = PageController();
   int _currentPage = 0;
 
-  // Account info
   final _emailController = TextEditingController();
   final _usernameController = TextEditingController();
   final _passwordController = TextEditingController();
@@ -26,7 +25,6 @@ class _SignupScreenState extends State<SignupScreen> {
   bool _obscurePassword = true;
   bool _obscureConfirm = true;
 
-  // Personal info
   final _firstNameController = TextEditingController();
   final _lastNameController = TextEditingController();
   final _contactController = TextEditingController();
@@ -105,12 +103,10 @@ class _SignupScreenState extends State<SignupScreen> {
   String? _validatePassword(String? value) {
     if (value == null || value.isEmpty) return 'Password is required';
     if (value.length < 8) return 'Password must be at least 8 characters';
-    if (!RegExp(r'[A-Z]').hasMatch(value)) {
+    if (!RegExp(r'[A-Z]').hasMatch(value))
       return 'Include at least one uppercase letter';
-    }
-    if (!RegExp(r'[a-z]').hasMatch(value)) {
+    if (!RegExp(r'[a-z]').hasMatch(value))
       return 'Include at least one lowercase letter';
-    }
     if (!RegExp(r'[0-9]').hasMatch(value)) return 'Include at least one number';
     return null;
   }
@@ -133,6 +129,16 @@ class _SignupScreenState extends State<SignupScreen> {
     return null;
   }
 
+  String? _validateName(String? value, String field) {
+    if (value == null || value.isEmpty) return '$field is required';
+    if (RegExp(r'[0-9]').hasMatch(value))
+      return '$field must not contain numbers';
+    if (RegExp(r'[!@#\$%^&*(),.?":{}|<>]').hasMatch(value)) {
+      return '$field must not contain special characters';
+    }
+    return null;
+  }
+
   void _nextPage() {
     if (_currentPage == 0) {
       if (_validateEmail(_emailController.text) != null ||
@@ -140,6 +146,14 @@ class _SignupScreenState extends State<SignupScreen> {
           _validatePassword(_passwordController.text) != null ||
           _validateConfirmPassword(_confirmPasswordController.text) != null) {
         _formKey.currentState?.validate();
+        Get.snackbar(
+          'Missing Information',
+          'Please fill in all fields correctly before continuing',
+          backgroundColor: AppColors.error,
+          colorText: Colors.white,
+          icon: const Icon(Icons.error_outline, color: Colors.white),
+          margin: const EdgeInsets.all(16),
+        );
         return;
       }
     }
@@ -161,10 +175,11 @@ class _SignupScreenState extends State<SignupScreen> {
 
     if (_selectedGender == null || _selectedBarangay == null) {
       Get.snackbar(
-        'Error',
-        'Please select gender and barangay',
+        'Missing Information',
+        'Please select your gender and barangay',
         backgroundColor: AppColors.error,
         colorText: Colors.white,
+        icon: const Icon(Icons.error_outline, color: Colors.white),
         margin: const EdgeInsets.all(16),
       );
       return;
@@ -200,7 +215,6 @@ class _SignupScreenState extends State<SignupScreen> {
     final email = _emailController.text.trim();
 
     if (AuthService.isRealEmail(email)) {
-      // Real email — Firebase already sent verification link in signUpWithProfile
       setState(() => _isLoading = false);
       Get.snackbar(
         'Check Your Email',
@@ -210,7 +224,6 @@ class _SignupScreenState extends State<SignupScreen> {
       );
       Get.off(() => VerificationScreen(email: email, userId: uid));
     } else {
-      // Dummy/test email — use Mailtrap + offline fallback (code 188188)
       await EmailService.instance.sendVerificationCode(email);
       AuthService.instance.currentUserId = uid;
       setState(() => _isLoading = false);
@@ -445,7 +458,7 @@ class _SignupScreenState extends State<SignupScreen> {
                     label: 'First Name',
                     hint: 'Juan',
                     icon: Icons.badge_rounded,
-                    validator: (v) => _validateRequired(v, 'First name'),
+                    validator: (v) => _validateName(v, 'First name'),
                   ),
                 ),
                 const SizedBox(width: 12),
@@ -455,7 +468,7 @@ class _SignupScreenState extends State<SignupScreen> {
                     label: 'Last Name',
                     hint: 'Dela Cruz',
                     icon: Icons.badge_outlined,
-                    validator: (v) => _validateRequired(v, 'Last name'),
+                    validator: (v) => _validateName(v, 'Last name'),
                   ),
                 ),
               ],
@@ -475,11 +488,34 @@ class _SignupScreenState extends State<SignupScreen> {
             _buildTextField(
               controller: _birthdayController,
               label: 'Birthday',
-              hint: 'Select your birthday',
+              hint: 'YYYY-MM-DD',
               icon: Icons.cake_rounded,
-              readOnly: true,
-              onTap: _pickDate,
-              validator: (v) => _validateRequired(v, 'Birthday'),
+              keyboardType: TextInputType.datetime,
+              inputFormatters: [
+                FilteringTextInputFormatter.allow(RegExp(r'[\d-]')),
+                LengthLimitingTextInputFormatter(10),
+                _DateInputFormatter(),
+              ],
+              suffixIcon: IconButton(
+                icon: Icon(Icons.calendar_today, color: AppColors.grey500),
+                onPressed: _pickDate,
+              ),
+              validator: (v) {
+                if (v == null || v.isEmpty) return 'Birthday is required';
+                final parts = v.split('-');
+                if (parts.length != 3 || v.length != 10)
+                  return 'Use format YYYY-MM-DD';
+                final year = int.tryParse(parts[0]);
+                final month = int.tryParse(parts[1]);
+                final day = int.tryParse(parts[2]);
+                if (year == null || month == null || day == null)
+                  return 'Invalid date';
+                if (month < 1 || month > 12) return 'Invalid month';
+                if (day < 1 || day > 31) return 'Invalid day';
+                if (year < 1900 || year > DateTime.now().year)
+                  return 'Invalid year';
+                return null;
+              },
             ),
             _buildDropdown(
               label: 'Gender',
@@ -721,6 +757,28 @@ class _SignupScreenState extends State<SignupScreen> {
                 ],
               ),
       ),
+    );
+  }
+}
+
+class _DateInputFormatter extends TextInputFormatter {
+  @override
+  TextEditingValue formatEditUpdate(
+    TextEditingValue oldValue,
+    TextEditingValue newValue,
+  ) {
+    final text = newValue.text.replaceAll('-', '');
+    final buffer = StringBuffer();
+
+    for (int i = 0; i < text.length && i < 8; i++) {
+      if (i == 4 || i == 6) buffer.write('-');
+      buffer.write(text[i]);
+    }
+
+    final formatted = buffer.toString();
+    return TextEditingValue(
+      text: formatted,
+      selection: TextSelection.collapsed(offset: formatted.length),
     );
   }
 }

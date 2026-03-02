@@ -1,8 +1,9 @@
 import 'package:flutter/material.dart';
 import 'package:get/get.dart';
 import '../constants/app_colors.dart';
-import 'package:cloud_firestore/cloud_firestore.dart';
 import '../services/auth_service.dart';
+
+// ✅ FIX: Removed cloud_firestore import — no longer queries users publicly
 
 class ForgotPasswordScreen extends StatefulWidget {
   const ForgotPasswordScreen({super.key});
@@ -37,24 +38,9 @@ class _ForgotPasswordScreenState extends State<ForgotPasswordScreen> {
 
     final email = _emailController.text.trim();
 
-    // Check if email exists in Firestore first
-    final user = await FirebaseFirestore.instance
-        .collection('users')
-        .where('email', isEqualTo: email)
-        .get();
-
-    if (user.docs.isEmpty) {
-      setState(() => _isLoading = false);
-      Get.snackbar(
-        'Error',
-        'No account found with that email',
-        backgroundColor: AppColors.error,
-        colorText: Colors.white,
-      );
-      return;
-    }
-
-    // Actually send Firebase reset email
+    // ✅ SECURITY FIX: Removed Firestore query that was exposing user data publicly
+    // Firebase Auth handles invalid emails automatically
+    // Always shows success to prevent email enumeration attacks
     final success = await AuthService.instance.forgotPassword(email);
 
     setState(() {
@@ -65,7 +51,7 @@ class _ForgotPasswordScreenState extends State<ForgotPasswordScreen> {
     if (success) {
       Get.snackbar(
         'Email Sent',
-        'Check your inbox for the reset link',
+        'If an account exists with that email, a reset link has been sent',
         backgroundColor: AppColors.success,
         colorText: Colors.white,
       );
@@ -93,7 +79,6 @@ class _ForgotPasswordScreenState extends State<ForgotPasswordScreen> {
                 child: Column(
                   mainAxisAlignment: MainAxisAlignment.center,
                   children: [
-                    // Icon
                     Container(
                       padding: const EdgeInsets.all(20),
                       decoration: BoxDecoration(
@@ -110,7 +95,6 @@ class _ForgotPasswordScreenState extends State<ForgotPasswordScreen> {
                       ),
                     ),
                     const SizedBox(height: 32),
-
                     Text(
                       _emailSent ? 'Check Your Email' : 'Forgot Password?',
                       style: const TextStyle(
@@ -131,7 +115,6 @@ class _ForgotPasswordScreenState extends State<ForgotPasswordScreen> {
                       ),
                     ),
                     const SizedBox(height: 40),
-
                     if (!_emailSent) ...[
                       Container(
                         padding: const EdgeInsets.all(24),
@@ -237,9 +220,8 @@ class _ForgotPasswordScreenState extends State<ForgotPasswordScreen> {
                             SizedBox(
                               width: double.infinity,
                               child: OutlinedButton(
-                                onPressed: () {
-                                  setState(() => _emailSent = false);
-                                },
+                                onPressed: () =>
+                                    setState(() => _emailSent = false),
                                 style: OutlinedButton.styleFrom(
                                   padding: const EdgeInsets.symmetric(
                                     vertical: 14,
@@ -265,9 +247,7 @@ class _ForgotPasswordScreenState extends State<ForgotPasswordScreen> {
                         ),
                       ),
                     ],
-
                     const SizedBox(height: 24),
-
                     GestureDetector(
                       onTap: () => Get.back(),
                       child: Container(
