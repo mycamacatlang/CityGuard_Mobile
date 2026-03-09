@@ -7,6 +7,7 @@ import '../services/location_service.dart';
 import '../services/cloudinary_service.dart';
 import '../constants/app_colors.dart';
 import '../services/auth_service.dart';
+import 'package:cloud_firestore/cloud_firestore.dart';
 
 class ReportScreen extends StatefulWidget {
   const ReportScreen({super.key});
@@ -22,7 +23,7 @@ class _ReportScreenState extends State<ReportScreen> {
   bool _analyzing = false;
   bool _submitting = false;
   bool _fetchingLocation = false;
-  String? _uploadStatus; // ✅ Shows upload progress to user
+  String? _uploadStatus;
 
   AIClassificationResult? _aiResult;
   LocationResult? _locationResult;
@@ -30,6 +31,7 @@ class _ReportScreenState extends State<ReportScreen> {
 
   String _selectedType = 'Accident';
   String? _manualOverrideType;
+  DateTime? _lastSubmitTime;
 
   final List<String> _incidentTypes = [
     'Accident',
@@ -134,6 +136,9 @@ class _ReportScreenState extends State<ReportScreen> {
     if (value.trim().length < 20) {
       return 'Description is too short — please provide more detail';
     }
+    if (value.trim().length > 500) {
+      return 'Description is too long — maximum 500 characters';
+    }
     if (RegExp(r'[<>{}\[\]\\]').hasMatch(value)) {
       return 'Description contains invalid characters';
     }
@@ -192,15 +197,60 @@ class _ReportScreenState extends State<ReportScreen> {
       setState(() {
         _analyzing = false;
         _aiResult = null;
-        _descriptionController.text =
-            'Could not analyze image. Please describe the incident manually.';
+        _descriptionController.clear();
       });
     }
   }
 
   // ─── Submit ──────────────────────────────────────────────────────────────────
 
+  Future<bool> _showSubmitConfirmationDialog() async {
+    return await showDialog<bool>(
+          context: context,
+          builder: (_) => AlertDialog(
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(16),
+            ),
+            title: const Text('Submit Report?'),
+            content: const Text(
+              'This will send your report to authorities. Please review your details before submitting.',
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(context, false),
+                child: const Text('Cancel'),
+              ),
+              ElevatedButton(
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: AppColors.primary,
+                ),
+                onPressed: () => Navigator.pop(context, true),
+                child: const Text(
+                  'Submit',
+                  style: TextStyle(color: Colors.white),
+                ),
+              ),
+            ],
+          ),
+        ) ??
+        false;
+  }
+
   Future<void> _submitReport() async {
+    // 0. Rate limiting — 30 second cooldown
+    if (_lastSubmitTime != null &&
+        DateTime.now().difference(_lastSubmitTime!) <
+            const Duration(seconds: 30)) {
+      Get.snackbar(
+        'Please Wait',
+        'You can only submit a report every 30 seconds.',
+        backgroundColor: Colors.orange,
+        colorText: Colors.white,
+        margin: const EdgeInsets.all(16),
+      );
+      return;
+    }
+
     // 1. Validate image
     final imageError = _validateImage();
     if (imageError != null) {
@@ -214,7 +264,21 @@ class _ReportScreenState extends State<ReportScreen> {
       return;
     }
 
-    // 2. Validate location
+    // 2. Check file size (max 10MB)
+    final file = File(_imagePath!);
+    final sizeInMB = file.lengthSync() / (1024 * 1024);
+    if (sizeInMB > 10) {
+      Get.snackbar(
+        'Image Too Large',
+        'Please use an image smaller than 10MB.',
+        backgroundColor: AppColors.error,
+        colorText: Colors.white,
+        margin: const EdgeInsets.all(16),
+      );
+      return;
+    }
+
+    // 3. Validate location
     if (_locationResult == null || !_locationResult!.isInDagupan) {
       Get.snackbar(
         'Location Required',
@@ -227,21 +291,34 @@ class _ReportScreenState extends State<ReportScreen> {
       return;
     }
 
-    // 3. Validate form fields
+    // 4. Sanitize description BEFORE form validation
+    final sanitizedDesc = _descriptionController.text.trim().replaceAll(
+      RegExp(r'[<>{}\[\]\\]'),
+      '',
+    );
+    _descriptionController.text = sanitizedDesc;
+
+    // 5. Validate form fields
     if (!(_formKey.currentState?.validate() ?? false)) return;
+
+    // 5.5 Confirm submission
+    final confirm = await _showSubmitConfirmationDialog();
+    if (!confirm) return;
+
+    // 6. Set rate limit timestamp
+    _lastSubmitTime = DateTime.now();
 
     setState(() {
       _submitting = true;
-      _uploadStatus = 'Uploading photo...'; // ✅ Show upload progress
+      _uploadStatus = 'Uploading photo...';
     });
 
     try {
-      // ✅ Step 1: Upload image to Cloudinary first
+      // Step 1: Upload image to Cloudinary
       String? imageUrl;
       if (_imagePath != null) {
         imageUrl = await CloudinaryService.instance.uploadImage(_imagePath!);
         if (imageUrl == null) {
-          // ✅ Upload failed — warn user but still allow submit without image URL
           setState(() => _uploadStatus = null);
           final continueAnyway = await _showUploadFailedDialog();
           if (!continueAnyway) {
@@ -254,23 +331,18 @@ class _ReportScreenState extends State<ReportScreen> {
       }
 
       final finalType = _manualOverrideType ?? _selectedType;
-      final sanitizedDesc = _descriptionController.text.trim().replaceAll(
-        RegExp(r'[<>{}\[\]\\]'),
-        '',
-      );
 
-      // ✅ Step 2: Submit to Firestore with Cloudinary URL (not local path)
+      // Step 2: Submit — userId NOT sent from client, set server-side
       await AuthService.instance.submitReport({
-        'userId': AuthService.instance.currentUserId,
         'type': finalType,
         'description': sanitizedDesc,
         'aiCategory': _aiResult?.category,
         'aiConfidence': _aiResult?.confidence,
         'aiOverriddenByUser': _manualOverrideType != null,
-        'imageUrl': imageUrl, // ✅ Cloudinary URL or null
-        'location': _locationResult!.toMap(), // ✅ Proper map with lat/lng
+        'imageUrl': imageUrl,
+        'location': _locationResult!.toMap(),
         'status': 'pending',
-        'createdAt': DateTime.now().toUtc().toIso8601String(),
+        'createdAt': FieldValue.serverTimestamp(),
       });
 
       setState(() {
@@ -301,7 +373,8 @@ class _ReportScreenState extends State<ReportScreen> {
     }
   }
 
-  // ✅ Ask user if they want to continue without photo URL
+  // ─── Upload Failed Dialog ────────────────────────────────────────────────────
+
   Future<bool> _showUploadFailedDialog() async {
     return await showDialog<bool>(
           context: context,
@@ -374,6 +447,8 @@ class _ReportScreenState extends State<ReportScreen> {
       ),
     );
   }
+
+  // ─── Widgets ─────────────────────────────────────────────────────────────────
 
   Widget _buildLocationBanner() {
     if (_fetchingLocation) {
@@ -684,6 +759,7 @@ class _ReportScreenState extends State<ReportScreen> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
+          // ── Header ──
           Row(
             children: [
               const Icon(
@@ -697,6 +773,11 @@ class _ReportScreenState extends State<ReportScreen> {
                 style: TextStyle(fontWeight: FontWeight.bold, fontSize: 15),
               ),
               const Spacer(),
+              // ✅ Hazard Level label + badge
+              Text(
+                'Hazard: ',
+                style: TextStyle(fontSize: 12, color: AppColors.textSecondary),
+              ),
               Container(
                 padding: const EdgeInsets.symmetric(
                   horizontal: 10,
@@ -718,10 +799,12 @@ class _ReportScreenState extends State<ReportScreen> {
             ],
           ),
           const SizedBox(height: 10),
+
+          // ── AI Score / Confidence ──
           Row(
             children: [
               Text(
-                'Confidence: ',
+                'AI Score: ',
                 style: TextStyle(fontSize: 12, color: AppColors.textSecondary),
               ),
               Expanded(
@@ -747,6 +830,8 @@ class _ReportScreenState extends State<ReportScreen> {
             ],
           ),
           const SizedBox(height: 10),
+
+          // ── AI Description ──
           Text(
             result.description,
             style: TextStyle(
@@ -755,6 +840,8 @@ class _ReportScreenState extends State<ReportScreen> {
               height: 1.5,
             ),
           ),
+
+          // ── Manual Override ──
           if (result.requiresManualOverride) ...[
             const SizedBox(height: 12),
             Container(
@@ -828,6 +915,7 @@ class _ReportScreenState extends State<ReportScreen> {
     );
   }
 
+
   Widget _buildIncidentTypeSelector() {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -893,7 +981,7 @@ class _ReportScreenState extends State<ReportScreen> {
                 borderRadius: BorderRadius.circular(8),
               ),
               child: const Text(
-                'AI filled',
+                'AI suggested — please review and edit',
                 style: TextStyle(
                   color: AppColors.primary,
                   fontSize: 11,
@@ -907,9 +995,11 @@ class _ReportScreenState extends State<ReportScreen> {
         TextFormField(
           controller: _descriptionController,
           maxLines: 4,
+          maxLength: 500,
           validator: _validateDescription,
           decoration: InputDecoration(
-            hintText: 'Describe what is happening...',
+            hintText:
+                'Describe what is happening... AI may suggest a description after photo analysis.',
             filled: true,
             fillColor: AppColors.grey100,
             border: OutlineInputBorder(
@@ -929,15 +1019,21 @@ class _ReportScreenState extends State<ReportScreen> {
         const SizedBox(height: 4),
         ValueListenableBuilder<TextEditingValue>(
           valueListenable: _descriptionController,
-          builder: (_, value, __) => Text(
-            '${value.text.trim().length} characters (min 20)',
-            style: TextStyle(
-              fontSize: 11,
-              color: value.text.trim().length >= 20
-                  ? AppColors.success
-                  : AppColors.textSecondary,
-            ),
-          ),
+          builder: (_, value, __) {
+            final count = value.text.trim().length;
+            Color counterColor = AppColors.textSecondary;
+
+            if (count > 500) {
+              counterColor = AppColors.error;
+            } else if (count >= 20) {
+              counterColor = AppColors.success;
+            }
+
+            return Text(
+              '$count/500 characters (min 20)',
+              style: TextStyle(fontSize: 11, color: counterColor),
+            );
+          },
         ),
       ],
     );
@@ -972,7 +1068,6 @@ class _ReportScreenState extends State<ReportScreen> {
                     ),
                   ),
                   const SizedBox(width: 12),
-                  // ✅ Shows "Uploading photo..." then "Submitting report..."
                   Text(
                     _uploadStatus ?? 'Submitting...',
                     style: const TextStyle(color: Colors.white, fontSize: 14),

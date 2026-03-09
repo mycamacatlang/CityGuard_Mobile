@@ -22,11 +22,12 @@ class AIClassificationResult {
       case 'Flood':
       case 'Accident':
       case 'Medical Emergency':
-        return 'High';
       case 'Crime':
-        return 'Medium';
-      default:
+        return 'High';
+      case 'Others':
         return 'Low';
+      default:
+        return 'Medium';
     }
   }
 

@@ -1,6 +1,7 @@
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import '../data/schema_constants.dart';
+import '../services/blockchain_service.dart';
 import 'package:flutter/foundation.dart';
 
 class AuthService {
@@ -202,8 +203,9 @@ class AuthService {
   Future<void> seedDummyDataIfEmpty() async {}
 
   /// ✅ MITIGATION: Secure report submission
+  /// ✅ BLOCKCHAIN: Report hash saved to Sepolia blockchain after Firestore save
   Future<void> submitReport(Map<String, dynamic> data) async {
-    // ✅ Reject if not logged in
+    // ✅ Layer 1: Reject if not logged in
     final user = _auth.currentUser;
     if (user == null) {
       throw Exception(
@@ -211,7 +213,7 @@ class AuthService {
       );
     }
 
-    // ✅ Validate required fields
+    // ✅ Layer 2: Validate required fields
     final type = data['type']?.toString().trim();
     final description = data['description']?.toString().trim();
 
@@ -222,12 +224,11 @@ class AuthService {
       throw Exception('Validation: description must be at least 20 characters');
     }
 
-    // ✅ Sanitize string fields
+    // ✅ Layer 3: Sanitize string fields
     String sanitize(dynamic val) =>
         val?.toString().replaceAll(RegExp(r'[<>{}\[\]\\]'), '').trim() ?? '';
 
-    // ✅ FIX: location stored as a proper map — not a string
-    // Accepts either a Map (from LocationResult.toMap()) or falls back safely
+    // ✅ Location stored as structured map
     Map<String, dynamic> safeLocation = {};
     final rawLocation = data['location'];
     if (rawLocation is Map<String, dynamic>) {
@@ -243,9 +244,9 @@ class AuthService {
       };
     }
 
-    // ✅ FIX: imageUrl from Cloudinary stored — NO local imagePath
-    // imageUrl is null if upload failed — report still saved without it
+    // ✅ Cloudinary URL stored — NO local imagePath
     final imageUrl = data['imageUrl']?.toString();
+    final timestamp = _now();
 
     final safeData = {
       'userId': user.uid, // ✅ Always from auth token
@@ -256,14 +257,53 @@ class AuthService {
           ? (data['aiConfidence'] as double).clamp(0.0, 1.0)
           : null,
       'aiOverriddenByUser': data['aiOverriddenByUser'] == true,
-      'imageUrl': imageUrl, // ✅ Cloudinary URL (not local path)
-      'imageUploaded': imageUrl != null, // ✅ Flag if upload succeeded
-      'location': safeLocation, // ✅ Proper map with lat/lng fields
+      'imageUrl': imageUrl, // ✅ Cloudinary URL
+      'imageUploaded': imageUrl != null,
+      'location': safeLocation, // ✅ Structured map with lat/lng
       'status': 'pending',
-      'createdAt': _now(),
+      'createdAt': timestamp,
+      'blockchainVerified': false, // ✅ Updated after blockchain save
     };
 
-    await _db.collection('reports').add(safeData);
+    // ✅ Step 1: Save to Firestore first (fast — user sees success immediately)
+    final docRef = await _db.collection('reports').add(safeData);
+    final reportId = docRef.id;
+    debugPrint('✅ Report saved to Firestore: $reportId');
+
+    // ✅ Step 2: Generate SHA-256 hash of report data
+    // This hash proves the report content was never tampered with
+    final reportHash = BlockchainService.instance.generateReportHash(
+      reportId: reportId,
+      userId: user.uid,
+      type: sanitize(data['type']),
+      description: sanitize(data['description']),
+      timestamp: timestamp,
+    );
+    debugPrint('✅ Report hash generated: $reportHash');
+
+    // ✅ Step 3: Save hash to Sepolia blockchain (runs in background)
+    // Does not block the user — report is already saved to Firestore
+    BlockchainService.instance
+        .submitReportHash(
+          reportId: reportId,
+          reportHash: reportHash,
+          incidentType: sanitize(data['type']),
+        )
+        .then((txHash) async {
+          if (txHash != null) {
+            // ✅ Step 4: Update Firestore with blockchain proof
+            await docRef.update({
+              'blockchainVerified': true,
+              'blockchainTxHash': txHash,
+              'blockchainHash': reportHash,
+            });
+            debugPrint('✅ Blockchain verified — tx: $txHash');
+          } else {
+            debugPrint(
+              '⚠️ Blockchain save failed — report still safe in Firestore',
+            );
+          }
+        });
   }
 
   Future<void> resendVerificationEmail() async {
