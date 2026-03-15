@@ -1,22 +1,22 @@
 import 'package:flutter/material.dart';
 
 /// CityGuard App Color Palette
-/// Primary brand color: #E74D3D (Vibrant Red)
+/// Primary brand color: #1565C0 (Cool Blue)
 class AppColors {
   AppColors._();
 
   // Primary colors
-  static const Color primary = Color(0xFFE74D3D);
-  static const Color primaryDark = Color(0xFFD32F2F);
-  static const Color primaryLight = Color(0xFFFF6F5E);
+  static const Color primary = Color(0xFF1565C0); // Cool Blue
+  static const Color primaryDark = Color(0xFF0D47A1); // Deep Blue
+  static const Color primaryLight = Color(0xFF1E88E5); // Light Blue
 
   // Secondary colors
   static const Color secondary = Color(0xFF2C3E50);
   static const Color secondaryLight = Color(0xFF34495E);
 
   // Accent colors
-  static const Color accent = Color(0xFFFF8A65);
-  static const Color accentAlt = Color(0xFFFFAB91);
+  static const Color accent = Color(0xFF42A5F5); // Sky Blue accent
+  static const Color accentAlt = Color(0xFF90CAF9); // Pale Blue accent
 
   // Neutral colors
   static const Color white = Color(0xFFFFFFFF);
@@ -36,11 +36,11 @@ class AppColors {
   static const Color success = Color(0xFF27AE60);
   static const Color warning = Color(0xFFF39C12);
   static const Color error = Color(0xFFE74C3C);
-  static const Color info = Color(0xFF3498DB);
+  static const Color info = Color(0xFF1E88E5);
 
   // Emergency type colors
   static const Color medical = Color(0xFFE74D3D);
-  static const Color police = Color(0xFF3498DB);
+  static const Color police = Color(0xFF1565C0);
   static const Color fire = Color(0xFFE67E22);
 
   // Background colors
@@ -75,26 +75,26 @@ class AppColors {
 
   // Shadows
   static List<BoxShadow> get cardShadow => [
-        BoxShadow(
-          color: Colors.black.withValues(alpha: 0.08),
-          blurRadius: 16,
-          offset: const Offset(0, 4),
-        ),
-      ];
+    BoxShadow(
+      color: Colors.black.withValues(alpha: 0.08),
+      blurRadius: 16,
+      offset: const Offset(0, 4),
+    ),
+  ];
 
   static List<BoxShadow> get primaryShadow => [
-        BoxShadow(
-          color: primary.withValues(alpha: 0.35),
-          blurRadius: 20,
-          offset: const Offset(0, 8),
-        ),
-      ];
+    BoxShadow(
+      color: primary.withValues(alpha: 0.35),
+      blurRadius: 20,
+      offset: const Offset(0, 8),
+    ),
+  ];
 
   static List<BoxShadow> get elevatedShadow => [
-        BoxShadow(
-          color: Colors.black.withValues(alpha: 0.12),
-          blurRadius: 24,
-          offset: const Offset(0, 12),
-        ),
-      ];
+    BoxShadow(
+      color: Colors.black.withValues(alpha: 0.12),
+      blurRadius: 24,
+      offset: const Offset(0, 12),
+    ),
+  ];
 }

@@ -4,6 +4,7 @@ import 'package:flutter_dotenv/flutter_dotenv.dart';
 import 'package:get/get.dart';
 import 'constants/app_colors.dart';
 import 'services/auth_service.dart';
+import 'services/connectivity_service.dart';
 import 'screens/login_screen.dart';
 import 'screens/home_screen.dart';
 import 'screens/location_screen.dart';
@@ -16,11 +17,9 @@ import 'package:firebase_auth/firebase_auth.dart';
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
 
-  // Initialize Firebase ← ADD THIS
   await Firebase.initializeApp(options: DefaultFirebaseOptions.currentPlatform);
   await dotenv.load(fileName: '.env');
 
-  // Set system UI overlay style (only on supported platforms)
   try {
     SystemChrome.setSystemUIOverlayStyle(
       const SystemUiOverlayStyle(
@@ -30,11 +29,11 @@ void main() async {
         systemNavigationBarIconBrightness: Brightness.dark,
       ),
     );
-  } catch (_) {
-    // Ignore on platforms that don't support this
-  }
+  } catch (_) {}
 
-  // Seed dummy data for offline testing (in-memory database resets on restart)
+  // ✅ Register connectivity service globally
+  Get.put(ConnectivityService());
+
   await AuthService.instance.seedDummyDataIfEmpty();
 
   runApp(const MyApp());
@@ -50,6 +49,10 @@ class MyApp extends StatelessWidget {
       debugShowCheckedModeBanner: false,
       theme: _buildTheme(),
       initialRoute: FirebaseAuth.instance.currentUser != null ? '/home' : '/',
+      // ✅ Wrap every screen with the connectivity banner
+      builder: (context, child) {
+        return ConnectivityBanner(child: child!);
+      },
       getPages: [
         GetPage(
           name: '/',
@@ -85,12 +88,10 @@ class MyApp extends StatelessWidget {
       useMaterial3: true,
       brightness: Brightness.light,
 
-      // Colors
       primaryColor: AppColors.primary,
       scaffoldBackgroundColor: AppColors.background,
       canvasColor: AppColors.surface,
 
-      // Color scheme
       colorScheme: const ColorScheme.light(
         primary: AppColors.primary,
         onPrimary: AppColors.white,
@@ -102,7 +103,6 @@ class MyApp extends StatelessWidget {
         onError: AppColors.white,
       ),
 
-      // Typography
       fontFamily: 'Roboto',
       textTheme: const TextTheme(
         displayLarge: TextStyle(
@@ -146,7 +146,6 @@ class MyApp extends StatelessWidget {
         ),
       ),
 
-      // App bar theme
       appBarTheme: const AppBarTheme(
         backgroundColor: AppColors.primary,
         foregroundColor: AppColors.white,
@@ -162,7 +161,6 @@ class MyApp extends StatelessWidget {
         iconTheme: IconThemeData(color: AppColors.white),
       ),
 
-      // Elevated button theme
       elevatedButtonTheme: ElevatedButtonThemeData(
         style: ElevatedButton.styleFrom(
           backgroundColor: AppColors.primary,
@@ -176,7 +174,6 @@ class MyApp extends StatelessWidget {
         ),
       ),
 
-      // Outlined button theme
       outlinedButtonTheme: OutlinedButtonThemeData(
         style: OutlinedButton.styleFrom(
           foregroundColor: AppColors.primary,
@@ -189,7 +186,6 @@ class MyApp extends StatelessWidget {
         ),
       ),
 
-      // Text button theme
       textButtonTheme: TextButtonThemeData(
         style: TextButton.styleFrom(
           foregroundColor: AppColors.primary,
@@ -197,7 +193,6 @@ class MyApp extends StatelessWidget {
         ),
       ),
 
-      // Input decoration theme
       inputDecorationTheme: InputDecorationTheme(
         filled: true,
         fillColor: AppColors.grey100,
@@ -231,7 +226,6 @@ class MyApp extends StatelessWidget {
         suffixIconColor: AppColors.textSecondary,
       ),
 
-      // Card theme
       cardTheme: CardThemeData(
         color: AppColors.cardBg,
         elevation: 0,
@@ -239,7 +233,6 @@ class MyApp extends StatelessWidget {
         margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
       ),
 
-      // Bottom sheet theme
       bottomSheetTheme: const BottomSheetThemeData(
         backgroundColor: AppColors.surface,
         shape: RoundedRectangleBorder(
@@ -247,7 +240,6 @@ class MyApp extends StatelessWidget {
         ),
       ),
 
-      // Dialog theme
       dialogTheme: DialogThemeData(
         backgroundColor: AppColors.surface,
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
@@ -258,7 +250,6 @@ class MyApp extends StatelessWidget {
         ),
       ),
 
-      // Snackbar theme
       snackBarTheme: SnackBarThemeData(
         backgroundColor: AppColors.secondary,
         contentTextStyle: const TextStyle(color: AppColors.white),
@@ -266,7 +257,6 @@ class MyApp extends StatelessWidget {
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
       ),
 
-      // Floating action button theme
       floatingActionButtonTheme: const FloatingActionButtonThemeData(
         backgroundColor: AppColors.primary,
         foregroundColor: AppColors.white,
@@ -274,17 +264,14 @@ class MyApp extends StatelessWidget {
         shape: CircleBorder(),
       ),
 
-      // Divider theme
       dividerTheme: const DividerThemeData(
         color: AppColors.grey200,
         thickness: 1,
         space: 1,
       ),
 
-      // Icon theme
       iconTheme: const IconThemeData(color: AppColors.textSecondary, size: 24),
 
-      // Chip theme
       chipTheme: ChipThemeData(
         backgroundColor: AppColors.grey100,
         selectedColor: AppColors.primary,
@@ -293,5 +280,53 @@ class MyApp extends StatelessWidget {
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
       ),
     );
+  }
+}
+
+// ✅ Connectivity Banner Widget — shows on ALL screens automatically
+class ConnectivityBanner extends StatelessWidget {
+  final Widget child;
+  const ConnectivityBanner({super.key, required this.child});
+
+  @override
+  Widget build(BuildContext context) {
+    final connectivity = ConnectivityService.instance;
+
+    return Obx(() {
+      final isConnected = connectivity.isConnected.value;
+      return Column(
+        children: [
+          // ✅ Banner slides in from top when offline
+          AnimatedContainer(
+            duration: const Duration(milliseconds: 300),
+            height: isConnected ? 0 : 36,
+            color: const Color(0xFFC62828), // dark red warning
+            child: isConnected
+                ? const SizedBox.shrink()
+                : const Row(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      Icon(
+                        Icons.wifi_off_rounded,
+                        color: Colors.white,
+                        size: 16,
+                      ),
+                      SizedBox(width: 8),
+                      Text(
+                        'No internet connection',
+                        style: TextStyle(
+                          color: Colors.white,
+                          fontSize: 13,
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
+                    ],
+                  ),
+          ),
+          // ✅ Rest of the app below the banner
+          Expanded(child: child),
+        ],
+      );
+    });
   }
 }
