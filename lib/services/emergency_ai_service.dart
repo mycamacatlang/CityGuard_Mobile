@@ -9,11 +9,32 @@ class AIClassificationResult {
   final String category;
   final double confidence;
 
-  // Flags low-confidence results so the UI can force manual override
-  bool get requiresManualOverride => confidence < 0.60;
+  // ✅ P1 REVISION: AI confidence threshold raised to 80% (0.80)
+  // Reports below 80% are REJECTED (not accepted with manual override).
+  static const double acceptThreshold = 0.80;
+
+  // ✅ P1 REVISION: true when confidence is below 80% → report is rejected
+  bool get isRejected => confidence < acceptThreshold;
 
   // Human-readable confidence label
   String get confidenceLabel => '${(confidence * 100).toStringAsFixed(0)}%';
+
+  // ✅ P1 REVISION: AI auto-routes to the correct response department
+  String get department {
+    switch (category) {
+      case 'Fire':
+        return 'BFP';
+      case 'Flood':
+        return 'CDRRMO/MDRRMOA';
+      case 'Accident':
+      case 'Medical Emergency':
+        return 'Medical Emergency Team and Responders';
+      case 'Crime':
+        return 'PNP';
+      default:
+        return 'CDRRMO/MDRRMOA';
+    }
+  }
 
   // Severity derived from category
   String get severity {
@@ -21,11 +42,12 @@ class AIClassificationResult {
       case 'Fire':
       case 'Flood':
       case 'Accident':
-      case 'Medical Emergency':
+      case 'Medical':
       case 'Crime':
+      case 'Drowning':
+      case 'Earthquake':
+      case 'Typhoon':
         return 'High';
-      case 'Others':
-        return 'Low';
       default:
         return 'Medium';
     }
@@ -33,17 +55,14 @@ class AIClassificationResult {
 
   // Description shown to user
   String get description {
-    if (requiresManualOverride) {
-      return 'AI is not confident ($confidenceLabel). '
-          'Please select the correct incident type manually and describe what happened.';
+    if (isRejected) {
+      return 'AI confidence is only $confidenceLabel (below the 80% '
+          'acceptance threshold). This report cannot be submitted. '
+          'Please record a clearer video of the incident.';
     }
     return 'AI detected: $category ($confidenceLabel). '
-        'Please verify the incident type before submitting.';
+        'Routed to: $department. Please verify before submitting.';
   }
-
-  // Legacy string format kept for backward compat with _buildAIResult()
-  String get legacyResultString =>
-      'Type: $category\nDescription: $description\nSeverity: $severity';
 
   const AIClassificationResult({
     required this.category,
@@ -58,14 +77,13 @@ class EmergencyAIService {
   Interpreter? _interpreter;
   List<String> _labels = [];
 
-  // Valid incident types that map to the report screen's selector
+  // ✅ P1 REVISION: Only 5 categories (FINAL) — Others removed
   static const List<String> validCategories = [
-    'Accident',
     'Fire',
     'Flood',
-    'Crime',
     'Medical Emergency',
-    'Others',
+    'Accident',
+    'Crime',
   ];
 
   Future<void> init() async {
@@ -101,7 +119,7 @@ class EmergencyAIService {
     final Uint8List bytes = await File(path).readAsBytes();
     final decoded = img.decodeImage(bytes);
     if (decoded == null) {
-      return const AIClassificationResult(category: 'Others', confidence: 0.0);
+      return const AIClassificationResult(category: 'Flood', confidence: 0.0);
     }
 
     final resized = img.copyResize(decoded, width: width, height: height);
@@ -145,15 +163,31 @@ class EmergencyAIService {
       }
     }
 
-    String rawLabel = bestIdx < _labels.length ? _labels[bestIdx] : 'Others';
+    String rawLabel = bestIdx < _labels.length ? _labels[bestIdx] : 'Flood';
 
-    //  MITIGATION: Normalize label to a known valid category
-    if (!validCategories.contains(rawLabel)) rawLabel = 'Others';
-
-    //  MITIGATION: Force 'Others' when confidence is too low
-    if (bestVal < 0.60) rawLabel = 'Others';
+    // ✅ P1 REVISION: Normalize label to a known valid category.
+    // If the model returns an unknown label, map it to a specific category
+    // (never "Others").
+    if (!validCategories.contains(rawLabel)) {
+      rawLabel = _mapUnknownLabel(rawLabel);
+    }
 
     return AIClassificationResult(category: rawLabel, confidence: bestVal);
+  }
+
+  // ✅ P1 REVISION: Map unknown model labels to one of the 5 categories.
+  String _mapUnknownLabel(String raw) {
+    final lower = raw.toLowerCase();
+    if (lower.contains('fire') || lower.contains('burn')) return 'Fire';
+    if (lower.contains('flood') || lower.contains('water')) return 'Flood';
+    if (lower.contains('accident') || lower.contains('crash')) return 'Accident';
+    if (lower.contains('crime') || lower.contains('rob') || lower.contains('theft')) {
+      return 'Crime';
+    }
+    if (lower.contains('medical') || lower.contains('ambulance') || lower.contains('heart') || lower.contains('drown')) {
+      return 'Medical Emergency';
+    }
+    return 'Flood'; // default specific category — never "Others"
   }
 
   // Legacy method kept for backward compat — delegates to classifyImage

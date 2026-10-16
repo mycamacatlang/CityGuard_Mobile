@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:ui';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -5,6 +6,7 @@ import 'package:get/get.dart';
 import '../constants/app_colors.dart';
 import '../widgets/bottom_nav.dart';
 import '../services/auth_service.dart';
+import '../services/location_service.dart';
 import 'account_screen.dart';
 import 'report_screen.dart';
 
@@ -17,7 +19,8 @@ class HomeScreen extends StatefulWidget {
 
 class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
   String _userName = 'User';
-  final String _currentLocation = 'Dagupan City, Pangasinan';
+  String _currentLocation = 'Detecting your location...';
+  Timer? _locationTimer;
 
   bool _isHolding = false;
   bool _showEmergencySelector = false;
@@ -50,6 +53,11 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
   void initState() {
     super.initState();
     _loadUserData();
+    _loadLocation();
+    _locationTimer = Timer.periodic(
+      const Duration(seconds: 30),
+      (_) => _loadLocation(),
+    );
 
     _pulseController = AnimationController(
       duration: const Duration(milliseconds: 1800),
@@ -80,6 +88,7 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
 
   @override
   void dispose() {
+    _locationTimer?.cancel();
     _pulseController.dispose();
     _holdController.dispose();
     super.dispose();
@@ -95,6 +104,23 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
         });
       }
     }
+  }
+
+  // Detects the real location place so the header is not stuck on Dagupan.
+  Future<void> _loadLocation() async {
+    final result = await LocationService.instance.getCurrentLocation();
+    if (!mounted) return;
+    setState(() {
+      if (result == null) {
+        // Only replace the hint, never wipe a place we already detected.
+        if (_currentLocation == 'Detecting your location...') {
+          _currentLocation = 'Location unavailable';
+        }
+        return;
+      }
+      // Show whatever place the user is really in, not a forced Dagupan value.
+      _currentLocation = result.displayPlace;
+    });
   }
 
   void _onHelpTap() {
@@ -320,6 +346,8 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
                 Expanded(
                   child: Text(
                     _currentLocation,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
                     style: TextStyle(
                       color: Colors.white.withValues(alpha: 0.95),
                       fontSize: 13,
@@ -752,17 +780,17 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
             ),
           ),
           const SizedBox(height: 12),
-          Row(
-            mainAxisAlignment: MainAxisAlignment.center,
-            children: [
-              Icon(
-                Icons.arrow_back_rounded,
-                color: Colors.white.withValues(alpha: 0.5),
-                size: 14,
-              ),
-              Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 4),
-                child: Text(
+          FittedBox(
+            child: Row(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                Icon(
+                  Icons.arrow_back_rounded,
+                  color: Colors.white.withValues(alpha: 0.5),
+                  size: 14,
+                ),
+                const SizedBox(width: 2),
+                Text(
                   'SWIPE',
                   style: TextStyle(
                     color: Colors.white.withValues(alpha: 0.6),
@@ -770,14 +798,15 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
                     fontWeight: FontWeight.bold,
                   ),
                 ),
-              ),
-              Icon(
-                Icons.arrow_forward_rounded,
-                color: Colors.white.withValues(alpha: 0.5),
-                size: 14,
-              ),
-            ],
-          ),
+                const SizedBox(width: 2),
+                Icon(
+                  Icons.arrow_forward_rounded,
+                  color: Colors.white.withValues(alpha: 0.5),
+                  size: 14,
+                ),
+              ],
+            ),
+          )
         ],
       ),
     );

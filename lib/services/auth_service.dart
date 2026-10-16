@@ -202,10 +202,13 @@ class AuthService {
 
   Future<void> seedDummyDataIfEmpty() async {}
 
-  /// ✅ MITIGATION: Secure report submission
-  /// ✅ BLOCKCHAIN: Report hash saved to Sepolia blockchain after Firestore save
+  /// ✅ P1 REVISION: Secure report submission with:
+  /// - Reporter identity/phone captured for verification
+  /// - AI confidence gate (80–100% only)
+  /// - Live video URL (gallery uploads disabled)
+  /// - Blockchain hash saved to Sepolia after Firestore save
   Future<void> submitReport(Map<String, dynamic> data) async {
-    // ✅ Layer 1: Reject if not logged in
+    // Layer 1: Reject if not logged in
     final user = _auth.currentUser;
     if (user == null) {
       throw Exception(
@@ -213,7 +216,7 @@ class AuthService {
       );
     }
 
-    // ✅ Layer 2: Validate required fields
+    // Layer 2: Validate required fields
     final type = data['type']?.toString().trim();
     final description = data['description']?.toString().trim();
 
@@ -224,11 +227,19 @@ class AuthService {
       throw Exception('Validation: description must be at least 20 characters');
     }
 
-    // ✅ Layer 3: Sanitize string fields
+    // ✅ P1 REVISION: AI confidence gate — only accept 80–100%
+    final aiConfidence = data['aiConfidence'];
+    if (aiConfidence is double && aiConfidence < 0.80) {
+      throw Exception(
+        'Validation: AI confidence is below 80%. Report rejected.',
+      );
+    }
+
+    // Layer 3: Sanitize string fields
     String sanitize(dynamic val) =>
         val?.toString().replaceAll(RegExp(r'[<>{}\[\]\\]'), '').trim() ?? '';
 
-    // ✅ Location stored as structured map
+    // Location stored as structured map
     Map<String, dynamic> safeLocation = {};
     final rawLocation = data['location'];
     if (rawLocation is Map<String, dynamic>) {
@@ -241,37 +252,52 @@ class AuthService {
             : null,
         'address': sanitize(rawLocation['address']),
         'city': sanitize(rawLocation['city']),
+        'accuracyMeters': rawLocation['accuracyMeters'],
+        'capturedAt': sanitize(rawLocation['capturedAt']),
       };
     }
 
-    // ✅ Cloudinary URL stored — NO local imagePath
-    final imageUrl = data['imageUrl']?.toString();
+    // ✅ P1 REVISION (video-only): Live video URL is the PRIMARY evidence.
+    // No photo is ever captured or stored — imageUrl/imageUploaded are kept
+    // only for backward compatibility with the original Firebase structure
+    // and point to the video URL (never a photo).
+    final videoUrl = data['videoUrl']?.toString();
     final timestamp = _now();
 
+    // ✅ P1 REVISION: Capture reporter identity + phone for verification
+    final profile = await getProfile(user.uid);
+    final reporterName = profile != null
+        ? '${profile['firstName'] ?? ''} ${profile['lastName'] ?? ''}'.trim()
+        : '';
+    final reporterPhone = profile?['contactNumber']?.toString() ?? '';
+
     final safeData = {
-      'userId': user.uid, // ✅ Always from auth token
+      'userId': user.uid, // Always from auth token
       'type': sanitize(data['type']),
       'description': sanitize(data['description']),
       'aiCategory': sanitize(data['aiCategory']),
-      'aiConfidence': data['aiConfidence'] is double
-          ? (data['aiConfidence'] as double).clamp(0.0, 1.0)
+      'aiConfidence': aiConfidence is double
+          ? aiConfidence.clamp(0.0, 1.0)
           : null,
       'aiOverriddenByUser': data['aiOverriddenByUser'] == true,
-      'imageUrl': imageUrl, // ✅ Cloudinary URL
-      'imageUploaded': imageUrl != null,
-      'location': safeLocation, // ✅ Structured map with lat/lng
+      'videoUrl': videoUrl, // ✅ P1: live video URL
+      'imageUrl': videoUrl, // kept for backward compat with web viewer
+      'imageUploaded': videoUrl != null,
+      'location': safeLocation, // Structured map with lat/lng
       'status': 'pending',
       'createdAt': timestamp,
-      'blockchainVerified': false, // ✅ Updated after blockchain save
+      'reporterName': reporterName, // ✅ P1: reporter identity
+      'reporterPhone': reporterPhone, // ✅ P1: reporter phone
+      'assignedDepartment': sanitize(data['assignedDepartment']),
+      'blockchainVerified': false, // Updated after blockchain save
     };
 
-    // ✅ Step 1: Save to Firestore first (fast — user sees success immediately)
+    // Step 1: Save to Firestore first (fast — user sees success immediately)
     final docRef = await _db.collection('reports').add(safeData);
     final reportId = docRef.id;
     debugPrint('✅ Report saved to Firestore: $reportId');
 
-    // ✅ Step 2: Generate SHA-256 hash of report data
-    // This hash proves the report content was never tampered with
+    // Step 2: Generate SHA-256 hash of report data
     final reportHash = BlockchainService.instance.generateReportHash(
       reportId: reportId,
       userId: user.uid,
@@ -281,8 +307,7 @@ class AuthService {
     );
     debugPrint('✅ Report hash generated: $reportHash');
 
-    // ✅ Step 3: Save hash to Sepolia blockchain (runs in background)
-    // Does not block the user — report is already saved to Firestore
+    // Step 3: Save hash to Sepolia blockchain (runs in background)
     BlockchainService.instance
         .submitReportHash(
           reportId: reportId,
@@ -291,7 +316,6 @@ class AuthService {
         )
         .then((txHash) async {
           if (txHash != null) {
-            // ✅ Step 4: Update Firestore with blockchain proof
             await docRef.update({
               'blockchainVerified': true,
               'blockchainTxHash': txHash,

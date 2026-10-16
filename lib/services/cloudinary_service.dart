@@ -13,10 +13,19 @@ class CloudinaryService {
   String get _reportPreset => dotenv.env['CLOUDINARY_UPLOAD_PRESET'] ?? '';
   String get _profilePreset => dotenv.env['CLOUDINARY_PROFILE_PRESET'] ?? '';
 
-  String get _uploadUrl =>
+  String get _imageUploadUrl =>
       'https://api.cloudinary.com/v1_1/$_cloudName/image/upload';
 
-  Future<String?> _upload(String filePath, String preset, String folder) async {
+  // ✅ P1 REVISION: Video upload endpoint (live incident video)
+  String get _videoUploadUrl =>
+      'https://api.cloudinary.com/v1_1/$_cloudName/video/upload';
+
+  Future<String?> _upload(
+    String filePath,
+    String preset,
+    String folder, {
+    bool isVideo = false,
+  }) async {
     try {
       final file = File(filePath);
       if (!file.existsSync()) {
@@ -25,7 +34,7 @@ class CloudinaryService {
       }
 
       final sizeInMB = file.lengthSync() / (1024 * 1024);
-      if (sizeInMB > 10) {
+      if (sizeInMB > 20) {
         debugPrint(
           'Cloudinary: file too large (${sizeInMB.toStringAsFixed(1)}MB)',
         );
@@ -34,14 +43,17 @@ class CloudinaryService {
 
       debugPrint('Cloudinary: uploading to folder=$folder preset=$preset');
 
-      // ✅ Force folder by setting public_id with folder prefix
-      // This guarantees the file lands in the correct folder regardless of preset settings
+      // Force folder by setting public_id with folder prefix
       final uniqueId = const Uuid().v4().replaceAll('-', '').substring(0, 20);
       final publicId = '$folder/$uniqueId';
 
-      final request = http.MultipartRequest('POST', Uri.parse(_uploadUrl));
+      final request = http.MultipartRequest(
+        'POST',
+        Uri.parse(isVideo ? _videoUploadUrl : _imageUploadUrl),
+      );
       request.fields['upload_preset'] = preset;
-      request.fields['public_id'] = publicId; // ✅ Forces correct folder
+      request.fields['public_id'] = publicId;
+      request.fields['resource_type'] = isVideo ? 'video' : 'image';
       request.files.add(await http.MultipartFile.fromPath('file', filePath));
 
       final response = await request.send();
@@ -65,6 +77,11 @@ class CloudinaryService {
   /// Report images → reports/ folder
   Future<String?> uploadImage(String filePath) async {
     return _upload(filePath, _reportPreset, 'reports');
+  }
+
+  /// ✅ P1 REVISION: Report videos → reports/videos folder
+  Future<String?> uploadVideo(String filePath) async {
+    return _upload(filePath, _reportPreset, 'reports/videos', isVideo: true);
   }
 
   /// Profile pictures → profiles/ folder
