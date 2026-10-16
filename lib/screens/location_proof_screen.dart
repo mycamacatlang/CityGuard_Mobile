@@ -266,11 +266,6 @@ class LocationProofScreen extends StatelessWidget {
             'Captured at',
             _formatTime(result.capturedAt),
           ),
-          _detailRow(
-            Icons.public_rounded,
-            'Region 1 / Pangasinan',
-            result.isInPangasinan ? 'Yes' : 'No',
-          ),
         ],
       ),
     );

@@ -289,6 +289,8 @@ class AuthService {
       'reporterName': reporterName, // ✅ P1: reporter identity
       'reporterPhone': reporterPhone, // ✅ P1: reporter phone
       'assignedDepartment': sanitize(data['assignedDepartment']),
+      'barangay': sanitize(data['barangay']),
+      'severity': sanitize(data['severity']),
       'blockchainVerified': false, // Updated after blockchain save
     };
 

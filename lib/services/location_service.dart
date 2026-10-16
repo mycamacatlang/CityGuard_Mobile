@@ -31,12 +31,17 @@ class LocationResult {
 
   // Short place text shown on the home screen and the location banner.
   String get displayPlace {
-    if (placeName.isNotEmpty && city.isNotEmpty) return '$placeName, $city';
-    if (city.isNotEmpty && province.isNotEmpty) return '$city, $province';
-    if (city.isNotEmpty) return city;
-    if (placeName.isNotEmpty) return placeName;
-    if (province.isNotEmpty) return province;
-    return 'Unknown location';
+    final seen = <String>{};
+    final parts = <String>[];
+    for (final value in [placeName, city, province]) {
+      final text = value.trim();
+      if (text.isEmpty) continue;
+      // Skip a value that repeats one already added.
+      if (!seen.add(text.toLowerCase())) continue;
+      parts.add(text);
+    }
+    if (parts.isEmpty) return 'Unknown location';
+    return parts.join(', ');
   }
 
   // City line stored with the report, built from the real place.
