@@ -1,11 +1,8 @@
 import 'dart:io';
-import 'dart:ui' as ui;
 import 'package:flutter/material.dart';
-import 'package:flutter/rendering.dart';
 import 'package:get/get.dart';
 import 'package:camera/camera.dart';
 import 'package:video_player/video_player.dart';
-import 'package:path_provider/path_provider.dart';
 import '../services/emergency_ai_service.dart';
 import '../services/location_service.dart';
 import '../services/cloudinary_service.dart';
@@ -24,16 +21,22 @@ class _ReportScreenState extends State<ReportScreen> {
   final _formKey = GlobalKey<FormState>();
   final _descriptionController = TextEditingController();
 
-  // ✅ P1 REVISION: Live video (10s max) — gallery uploads DISABLED
+  // Photo is the quick capture, video is the backup evidence.
+  EvidenceStage _evidenceStage = EvidenceStage.photo;
+  String? _photoPath;
+
+  // Video backup recorder, 10 seconds max.
   CameraController? _cameraController;
   List<CameraDescription> _cameras = [];
   bool _isRecording = false;
+  bool _isPreparingRecording = false;
   String? _videoPath;
   int _recordSeconds = 0;
 
-  // ✅ P1 REVISION (video-only): video player + frame key so the AI
-  // analyzes a frame extracted FROM THE RECORDED VIDEO (never a photo).
-  final GlobalKey _videoFrameKey = GlobalKey();
+  // Still taken at record time, the AI scores this instead of the video stream.
+  String? _videoFramePath;
+
+  // Video player for the recorded backup.
   VideoPlayerController? _videoController;
   bool _isVideoPlaying = false;
 
@@ -42,27 +45,40 @@ class _ReportScreenState extends State<ReportScreen> {
   bool _fetchingLocation = false;
   String? _uploadStatus;
 
+  // True while the taken photo waits for Okay or Retry, AI has not run yet.
+  bool _photoPendingConfirm = false;
+
+  // Photo result is kept so a rejected video cannot erase it.
+  AIClassificationResult? _photoResult;
+
+  // Result currently shown and applied, photo or video.
   AIClassificationResult? _aiResult;
   LocationResult? _locationResult;
   String? _locationError;
 
-  // ✅ P1 REVISION: Dropdown selections (no manual typing for details)
+  // Counts how many times the user was pushed to the video backup.
+  int _videoEscalations = 0;
+
+  // True when the photo was below 80%, so the video needs its own score.
+  bool _videoNeedsAI = true;
+
+  // True when the newest result is below 80%, so the typed description carries it.
+  bool get _scoreRejected => _aiResult?.isRejected ?? false;
+
+  // Submit unlocks once a video exists and no score is still running.
+  bool get _videoReviewed => _videoPath != null && !_analyzing;
+
   String _selectedType = 'Accident';
   String _selectedBarangay = 'Poblacion Oeste';
   String _selectedSeverity = 'High';
   DateTime? _lastSubmitTime;
 
-  // ✅ P2 REVISION: Tracks whether the user manually overrode the AI's
-  // suggested incident type. Set to true when the user changes the type in
-  // the dropdown after AI analysis, so the system knows the user's choice
-  // (and its routed department) is what gets submitted.
+  // True when the user manually changed the incident type after AI analysis.
   bool _aiOverriddenByUser = false;
 
-  // ✅ P1 REVISION: Reporter verification (from logged-in user's profile)
   String _reporterName = '';
   String _reporterPhone = '';
 
-  // ✅ P1 REVISION: Only 5 incident categories (Others removed)
   final List<String> _incidentTypes = [
     'Fire',
     'Flood',
@@ -82,10 +98,7 @@ class _ReportScreenState extends State<ReportScreen> {
     'Salisay', 'Tambac', 'Tapuac', 'Tebeng',
   ];
 
-  final List<String> _severities = ['High', 'Medium', 'Low'];
-
-  // ✅ P1 REVISION: Map an incident type to its assigned department.
-  // Used so the "Routed to" label updates when the user changes the type.
+  // Maps an incident type to its assigned department.
   String _departmentFor(String type) {
     switch (type) {
       case 'Fire':
@@ -111,7 +124,7 @@ class _ReportScreenState extends State<ReportScreen> {
     _loadReporterProfile();
   }
 
-  // ✅ P1 REVISION: Pull reporter name + phone from the logged-in user's profile
+  // Pulls reporter name and phone from the logged-in user's profile.
   Future<void> _loadReporterProfile() async {
     try {
       final uid = AuthService.instance.currentUserId;
@@ -137,28 +150,12 @@ class _ReportScreenState extends State<ReportScreen> {
     super.dispose();
   }
 
-  // ─── Camera (live video, 10s max) ───────────────────────────────
+  // ─── Quick capture (photo) ───────────────────────────────────────────────
 
-  Future<void> _initCamera() async {
-    try {
-      _cameras = await availableCameras();
-      if (_cameras.isEmpty) return;
-      final back = _cameras.firstWhere(
-        (c) => c.lensDirection == CameraLensDirection.back,
-        orElse: () => _cameras.first,
-      );
-      // ✅ P3 REVISION: Use a lower resolution preset (medium) so the live
-      // camera preview runs smoothly on the user's real phone (less lag).
-      _cameraController = CameraController(back, ResolutionPreset.medium);
-      await _cameraController!.initialize();
-      if (mounted) setState(() {});
-    } catch (e) {
-      debugPrint('Camera init error: $e');
-    }
-  }
-
-  Future<void> _startRecording() async {
-    if (_cameraController == null || !_cameraController!.value.isInitialized) {
+  // Shutter inside the photo box takes the shot, AI waits for Okay.
+  Future<void> _takePhoto() async {
+    final camera = _cameraController;
+    if (camera == null || !camera.value.isInitialized) {
       Get.snackbar(
         'Camera Not Ready',
         'Please wait for the camera to initialize.',
@@ -169,17 +166,106 @@ class _ReportScreenState extends State<ReportScreen> {
       return;
     }
     try {
-      await _cameraController!.startVideoRecording();
+      final shot = await camera.takePicture();
+      if (!mounted) return;
       setState(() {
+        _photoPath = shot.path;
+        _photoPendingConfirm = true;
+        _aiResult = null;
+        _photoResult = null;
+      });
+    } catch (e) {
+      debugPrint('Photo capture error: $e');
+      Get.snackbar(
+        'Camera Error',
+        'Could not take the photo. Please try again.',
+        backgroundColor: AppColors.error,
+        colorText: Colors.white,
+        margin: const EdgeInsets.all(16),
+      );
+    }
+  }
+
+  // Retry drops the shot and returns to the live preview.
+  void _retryPhoto() {
+    setState(() {
+      _photoPath = null;
+      _photoPendingConfirm = false;
+      _aiResult = null;
+      _photoResult = null;
+    });
+  }
+
+  // Okay is the only thing that starts the AI analysis.
+  Future<void> _confirmPhoto() async {
+    if (_photoPath == null) return;
+    setState(() => _photoPendingConfirm = false);
+    await _analyzeWithAI(_photoPath!, EvidenceStage.photo);
+  }
+
+  // ─── Video backup ────────────────────────────────────────────────────────
+
+  Future<void> _initCamera() async {
+    try {
+      _cameras = await availableCameras();
+      if (_cameras.isEmpty) return;
+      final back = _cameras.firstWhere(
+        (c) => c.lensDirection == CameraLensDirection.back,
+        orElse: () => _cameras.first,
+      );
+      // Medium preset keeps the live preview smooth on a real phone.
+      _cameraController = CameraController(back, ResolutionPreset.medium);
+      await _cameraController!.initialize();
+      if (mounted) setState(() {});
+    } catch (e) {
+      debugPrint('Camera init error: $e');
+    }
+  }
+
+  Future<void> _startRecording() async {
+    if (_isRecording || _isPreparingRecording) return;
+    if (_cameraController == null || !_cameraController!.value.isInitialized) {
+      Get.snackbar(
+        'Camera Not Ready',
+        'Please wait for the camera to initialize.',
+        backgroundColor: AppColors.error,
+        colorText: Colors.white,
+        margin: const EdgeInsets.all(16),
+      );
+      return;
+    }
+    setState(() {
+      _isPreparingRecording = true;
+      if (_videoNeedsAI) _aiResult = null;
+      _videoPath = null;
+      _isVideoPlaying = false;
+    });
+    _videoFramePath = null;
+    try {
+      // Still taken now, the camera cannot hand over a video frame later.
+      String? framePath;
+      if (_videoNeedsAI) {
+        try {
+          final shot = await _cameraController!.takePicture();
+          framePath = shot.path;
+          if (mounted) setState(() => _videoFramePath = framePath);
+        } catch (e) {
+          debugPrint('Video frame error: $e');
+        }
+      }
+      await _cameraController!.startVideoRecording();
+      if (!mounted) return;
+      setState(() {
+        _isPreparingRecording = false;
         _isRecording = true;
         _recordSeconds = 0;
-        _videoPath = null;
-        _aiResult = null;
       });
-      // ✅ 10-second max recording
       _startTimer();
     } catch (e) {
       debugPrint('Start recording error: $e');
+      if (mounted) {
+        setState(() => _isPreparingRecording = false);
+      }
     }
   }
 
@@ -202,85 +288,50 @@ class _ReportScreenState extends State<ReportScreen> {
       setState(() {
         _isRecording = false;
         _videoPath = file.path;
+        // Show the scoring state straight away when a score is coming.
+        _analyzing = _videoNeedsAI;
       });
-      // ✅ P1 REVISION (video-only): set up the recorded video for playback
-      // and extract a frame from it for AI analysis.
       await _setupVideoController();
+      // A photo below 80% needs the video scored as well.
+      if (_videoNeedsAI) await _analyzeVideo();
     } catch (e) {
       debugPrint('Stop recording error: $e');
       setState(() => _isRecording = false);
     }
   }
 
-  // ✅ P1 REVISION (video-only): load the recorded video, render it inside
-  // the RepaintBoundary, then extract a frame for the AI classifier.
+  // Loads the recorded video so it can be replayed or recorded again.
   Future<void> _setupVideoController() async {
     if (_videoPath == null) return;
     try {
       _videoController?.dispose();
       _videoController = VideoPlayerController.file(File(_videoPath!));
       await _videoController!.initialize();
-
-      // Rebuild the widget tree so the video player is rendered inside the
-      // RepaintBoundary (the frame key must have a live context).
       if (mounted) setState(() {});
-      await Future.delayed(const Duration(milliseconds: 300));
-
-      // Play briefly so a real frame is rendered, then pause for extraction.
-      await _videoController!.play();
-      await Future.delayed(const Duration(milliseconds: 500));
-      await _videoController!.pause();
-      if (mounted) setState(() => _isVideoPlaying = false);
-
-      // Now extract a frame from the recorded video and run AI on it.
-      await _extractFrameFromVideo();
     } catch (e) {
       debugPrint('Video controller error: $e');
-      if (mounted) setState(() => _analyzing = false);
     }
   }
 
-  // ✅ P1 REVISION (video-only): extract a frame from the RECORDED VIDEO
-  // and feed it to the AI classifier. No photo is ever captured or stored.
-  // The controller is already set up and rendered by _setupVideoController.
-  Future<void> _extractFrameFromVideo() async {
-    if (_videoPath == null) return;
-    if (mounted) setState(() => _analyzing = true);
-    try {
-      // Ensure the video is paused at a representative frame.
-      if (_videoController != null && _videoController!.value.isInitialized) {
-        await _videoController!.seekTo(const Duration(seconds: 1));
-        await Future.delayed(const Duration(milliseconds: 300));
-      }
-
-      final boundary = _videoFrameKey.currentContext?.findRenderObject()
-          as RenderRepaintBoundary?;
-      if (boundary == null) {
-        debugPrint('RepaintBoundary not found — cannot extract frame');
+  // Scores the video backup, using the still taken when recording started.
+  Future<void> _analyzeVideo() async {
+    var framePath = _videoFramePath;
+    // A missing still is retaken so the video is never left unscored.
+    if (framePath == null) {
+      try {
+        final shot = await _cameraController!.takePicture();
+        framePath = shot.path;
+        _videoFramePath = framePath;
+      } catch (e) {
+        debugPrint('Video frame retry error: $e');
         if (mounted) setState(() => _analyzing = false);
         return;
       }
-      final image = await boundary.toImage(pixelRatio: 1.0);
-      final byteData = await image.toByteData(format: ui.ImageByteFormat.png);
-      if (byteData == null) {
-        if (mounted) setState(() => _analyzing = false);
-        return;
-      }
-      final tempDir = await getTemporaryDirectory();
-      final frameFile = File(
-        '${tempDir.path}/ai_frame_${DateTime.now().millisecondsSinceEpoch}.png',
-      );
-      await frameFile.writeAsBytes(byteData.buffer.asUint8List());
-
-      // Feed the extracted video frame to the AI classifier
-      await _analyzeWithAI(frameFile.path);
-    } catch (e) {
-      debugPrint('Frame extraction error: $e');
-      if (mounted) setState(() => _analyzing = false);
     }
+    await _analyzeWithAI(framePath, EvidenceStage.video);
   }
 
-  // ─── Location ───────────────────────────────────────────────────
+  // ─── Location ────────────────────────────────────────────────────────────
 
   Future<void> _fetchLocation() async {
     setState(() {
@@ -361,10 +412,12 @@ class _ReportScreenState extends State<ReportScreen> {
     );
   }
 
-  // ─── Validators ─────────────────────────────────────────────────
+  // ─── Validators ──────────────────────────────────────────────────────────
 
-  String? _validateVideo() {
-    if (_videoPath == null) return 'A live video is required to submit a report';
+  String? _validateEvidence() {
+    // Both files are submitted, so both must exist.
+    if (_photoPath == null) return 'A photo is required to submit a report';
+    if (_videoPath == null) return 'A video backup is required to submit';
     return null;
   }
 
@@ -373,10 +426,10 @@ class _ReportScreenState extends State<ReportScreen> {
       return 'Please describe what is happening';
     }
     if (value.trim().length < 20) {
-      return 'Description is too short — please provide more detail';
+      return 'Description is too short, please provide more detail';
     }
     if (value.trim().length > 500) {
-      return 'Description is too long — maximum 500 characters';
+      return 'Description is too long, maximum 500 characters';
     }
     if (RegExp(r'[<>{}\[\]\\]').hasMatch(value)) {
       return 'Description contains invalid characters';
@@ -384,37 +437,80 @@ class _ReportScreenState extends State<ReportScreen> {
     return null;
   }
 
-  // ─── AI Analysis ────────────────────────────────────────────────
+  // ─── AI analysis and the escalation loop ─────────────────────────────────
 
-  Future<void> _analyzeWithAI(String framePath) async {
+  // Builds the starting description from the accepted AI facts only.
+  String _suggestedDescription(AIClassificationResult result) {
+    return '${result.category} reported in $_selectedBarangay. '
+        'Severity assessed as ${result.severityLabel}.';
+  }
+
+  // Scores one evidence frame. A rejected video must not erase the photo facts.
+  Future<void> _analyzeWithAI(String framePath, EvidenceStage stage) async {
     setState(() => _analyzing = true);
 
     try {
-      // ✅ P1: AI analyzes the captured video frame to detect incident type
       final result = await EmergencyAIService.instance.classifyImage(
         framePath,
+        stage: stage,
       );
+
+      if (!mounted) return;
+
+      // A video still below 80% keeps the photo's facts on screen.
+      final applyFacts = stage == EvidenceStage.photo || !result.isRejected;
+
       setState(() {
         _aiResult = result;
+        if (stage == EvidenceStage.photo) _photoResult = result;
         _analyzing = false;
-        if (!result.isRejected && _incidentTypes.contains(result.category)) {
+        // The accepted type pre-fills the dropdown, the user can still change it.
+        if (applyFacts && _incidentTypes.contains(result.category)) {
           _selectedType = result.category;
         }
-        // ✅ P2 REVISION: A fresh AI analysis resets the override flag.
-        _aiOverriddenByUser = false;
-        _descriptionController.text = result.description;
+        // Severity box mirrors the AI band, so it is filled, never picked.
+        if (applyFacts) {
+          _selectedSeverity = result.severityLabel;
+          _aiOverriddenByUser = false;
+        }
+        // Only real incident text is pre-filled, never the AI status sentence.
+        if (!result.isRejected) {
+          _descriptionController.text = _suggestedDescription(result);
+        }
       });
+
+      // The photo always moves on to the video backup, accepted or not.
+      if (stage == EvidenceStage.photo) {
+        _escalateToVideo(keepPhotoInfo: !result.isRejected);
+      }
+      // A rejected video stays put, the replay button starts a new recording.
     } catch (e) {
       debugPrint('TFLite error: $e');
+      if (!mounted) return;
       setState(() {
         _analyzing = false;
-        _aiResult = null;
-        _descriptionController.clear();
+        if (stage == EvidenceStage.photo) {
+          _aiResult = null;
+          _photoResult = null;
+          // Bring the Retry and Okay buttons back so the photo can be redone.
+          _photoPendingConfirm = true;
+        }
       });
     }
   }
 
-  // ─── Submit ─────────────────────────────────────────────────────
+  // The video backup runs after the photo, accepted or not.
+  void _escalateToVideo({bool keepPhotoInfo = false}) {
+    // Only a rejected photo counts as an escalation.
+    if (!keepPhotoInfo) _videoEscalations++;
+    setState(() {
+      _evidenceStage = EvidenceStage.video;
+      // An accepted photo needs no second score, the video is upload only.
+      _videoNeedsAI = !keepPhotoInfo;
+    });
+  }
+
+  // ─── Submit ──────────────────────────────────────────────────────────────
 
   Future<bool> _showSubmitConfirmationDialog() async {
     return await showDialog<bool>(
@@ -449,7 +545,7 @@ class _ReportScreenState extends State<ReportScreen> {
   }
 
   Future<void> _submitReport() async {
-    // 0. Rate limiting — 30 second cooldown
+    // 0. Rate limiting, 30 second cooldown.
     if (_lastSubmitTime != null &&
         DateTime.now().difference(_lastSubmitTime!) <
             const Duration(seconds: 30)) {
@@ -463,12 +559,12 @@ class _ReportScreenState extends State<ReportScreen> {
       return;
     }
 
-    // 1. Validate video
-    final videoError = _validateVideo();
-    if (videoError != null) {
+    // 1. Validate the evidence for the current stage.
+    final evidenceError = _validateEvidence();
+    if (evidenceError != null) {
       Get.snackbar(
-        'Video Required',
-        videoError,
+        'Evidence Required',
+        evidenceError,
         backgroundColor: AppColors.error,
         colorText: Colors.white,
         margin: const EdgeInsets.all(16),
@@ -476,21 +572,26 @@ class _ReportScreenState extends State<ReportScreen> {
       return;
     }
 
-    // 2. Check file size (max 20MB)
-    final file = File(_videoPath!);
-    final sizeInMB = file.lengthSync() / (1024 * 1024);
-    if (sizeInMB > 20) {
-      Get.snackbar(
-        'Video Too Large',
-        'Please use a video smaller than 20MB.',
-        backgroundColor: AppColors.error,
-        colorText: Colors.white,
-        margin: const EdgeInsets.all(16),
-      );
-      return;
+    // 2. Check file size, max 20MB, for every captured file.
+    final evidencePaths = <String>[
+      if (_photoPath != null) _photoPath!,
+      if (_videoPath != null) _videoPath!,
+    ];
+    for (final path in evidencePaths) {
+      final sizeInMB = File(path).lengthSync() / (1024 * 1024);
+      if (sizeInMB > 20) {
+        Get.snackbar(
+          'File Too Large',
+          'Please use a file smaller than 20MB.',
+          backgroundColor: AppColors.error,
+          colorText: Colors.white,
+          margin: const EdgeInsets.all(16),
+        );
+        return;
+      }
     }
 
-    // 3. Validate location
+    // 3. Validate location.
     if (_locationResult == null || !_locationResult!.isInDagupan) {
       Get.snackbar(
         'Location Required',
@@ -503,12 +604,11 @@ class _ReportScreenState extends State<ReportScreen> {
       return;
     }
 
-    // 4. ✅ AI confidence gate — only accept 80–100%
-    if (_aiResult == null || _aiResult!.isRejected) {
+    // 4. AI gate. A photo below 80% must have been escalated to video first.
+    if (_aiResult == null) {
       Get.snackbar(
-        'AI Confidence Too Low',
-        'AI confidence must be 80–100% to accept the report. '
-        'Please record a clearer video.',
+        'AI Analysis Required',
+        'Please capture a photo so the AI can analyse the incident.',
         backgroundColor: AppColors.error,
         colorText: Colors.white,
         margin: const EdgeInsets.all(16),
@@ -516,70 +616,116 @@ class _ReportScreenState extends State<ReportScreen> {
       );
       return;
     }
-
-    // 5. Sanitize description BEFORE form validation
+    // 5. Sanitize description before form validation.
     final sanitizedDesc = _descriptionController.text.trim().replaceAll(
       RegExp(r'[<>{}\[\]\\]'),
       '',
     );
     _descriptionController.text = sanitizedDesc;
 
-    // 6. Validate form fields
+    // 6. Validate form fields.
     if (!(_formKey.currentState?.validate() ?? false)) return;
 
-    // 7. Confirm submission
+    // 7. Confirm submission.
     final confirm = await _showSubmitConfirmationDialog();
     if (!confirm) return;
 
-    // 8. Set rate limit timestamp
+    // 8. Set rate limit timestamp.
     _lastSubmitTime = DateTime.now();
 
     setState(() {
       _submitting = true;
-      _uploadStatus = 'Uploading video...';
+      _uploadStatus = 'Uploading evidence...';
     });
 
     try {
-      // Step 1: Upload video to Cloudinary
+      // Snapshot both evidence paths so the photo survives a video escalation.
+      final photoPath = _photoPath;
+      final videoPath = _videoPath;
+
+      // Step 1: Upload every piece of evidence the user actually captured.
+      String? photoUrl;
       String? videoUrl;
-      if (_videoPath != null) {
-        videoUrl = await CloudinaryService.instance.uploadVideo(_videoPath!);
-        if (videoUrl == null) {
-          setState(() => _uploadStatus = null);
-          final continueAnyway = await _showUploadFailedDialog();
-          if (!continueAnyway) {
-            setState(() => _submitting = false);
-            return;
-          }
-        } else {
-          setState(() => _uploadStatus = 'Submitting report...');
+
+      if (photoPath != null) {
+        setState(() => _uploadStatus = 'Uploading photo...');
+        photoUrl = await CloudinaryService.instance.uploadImage(photoPath);
+        if (photoUrl == null) {
+          setState(() {
+            _uploadStatus = null;
+            _submitting = false;
+          });
+          Get.snackbar(
+            'Photo Upload Failed',
+            'The photo could not be uploaded. Please try submitting again.',
+            backgroundColor: AppColors.error,
+            colorText: Colors.white,
+            margin: const EdgeInsets.all(16),
+          );
+          return;
         }
       }
 
-      // Step 2: Submit — userId NOT sent from client, set server-side
-      // ✅ P5 REVISION: When the user overrides the incident type, BOTH
-      // `type` and `aiCategory` are set to the user's chosen type so the
-      // report stored in Firebase shows the correct type everywhere.
-      // When the user does NOT override, keep the AI's original aiCategory.
+      if (videoPath != null) {
+        setState(() => _uploadStatus = 'Uploading video...');
+        videoUrl = await CloudinaryService.instance.uploadVideo(videoPath);
+        if (videoUrl == null) {
+          setState(() {
+            _uploadStatus = null;
+            _submitting = false;
+          });
+          Get.snackbar(
+            'Video Upload Failed',
+            'The video could not be uploaded. Please try submitting again.',
+            backgroundColor: AppColors.error,
+            colorText: Colors.white,
+            margin: const EdgeInsets.all(16),
+          );
+          return;
+        }
+      }
+
+      if (photoUrl != null || videoUrl != null) {
+        setState(() => _uploadStatus = 'Submitting report...');
+      }
+
+      // Step 2: Submit. userId is not sent from the client, set server-side.
+      // Use the type and department actually submitted, not a stale AI value.
+      final submittedType = _selectedType;
+      final submittedDepartment = _departmentFor(submittedType);
       final submittedCategory = _aiOverriddenByUser
-          ? _selectedType
-          : (_aiResult?.category ?? _selectedType);
+          ? submittedType
+          : (_aiResult?.category ?? submittedType);
+
+      // Severity is read-only and mirrors the AI band, which is LOW in the fallback.
+      final severity = _aiResult?.severityLabel ?? _selectedSeverity;
 
       await AuthService.instance.submitReport({
-        'type': _selectedType,
+        'type': submittedType,
         'description': sanitizedDesc,
         'aiCategory': submittedCategory,
         'aiConfidence': _aiResult?.confidence,
-        // ✅ P2 REVISION: true when the user manually changed the incident
-        // type after AI analysis; the user's selected type/barangay/severity
-        // and its routed department are what get submitted.
         'aiOverriddenByUser': _aiOverriddenByUser,
+        // A rejected photo means the typed description is the user's own.
+        'manuallyDescribed': _scoreRejected,
+        'evidenceStage': _evidenceStage == EvidenceStage.photo
+            ? 'photo'
+            : 'video',
+        'videoEscalations': _videoEscalations,
         'videoUrl': videoUrl,
+        'photoUrl': photoUrl,
+        // Photo evidence must reach the document, not just the upload call.
+        'imageUrl': photoUrl,
+        'imageUploaded': photoUrl != null,
+        // Reporter identity stays top level so the dashboard can read it.
+        'reporterName': _reporterName,
+        'reporterPhone': _reporterPhone,
+        // Location map holds GPS only, nothing else goes inside it.
         'location': _locationResult!.toMap(),
         'status': 'pending',
-        'assignedDepartment': _departmentFor(_selectedType),
+        'assignedDepartment': submittedDepartment,
         'barangay': _selectedBarangay,
-        'severity': _selectedSeverity,
+        'severity': severity,
         'createdAt': FieldValue.serverTimestamp(),
       });
 
@@ -591,7 +737,7 @@ class _ReportScreenState extends State<ReportScreen> {
       Get.back();
       Get.snackbar(
         'Report Submitted',
-        'Your report has been sent to ${_aiResult?.department ?? 'authorities'}',
+        'Your report has been sent to $submittedDepartment',
         backgroundColor: AppColors.success,
         colorText: Colors.white,
         margin: const EdgeInsets.all(16),
@@ -611,43 +757,19 @@ class _ReportScreenState extends State<ReportScreen> {
     }
   }
 
-  // ─── Upload Failed Dialog ───────────────────────────────────────
+  // ─── Build ───────────────────────────────────────────────────────────────
 
-  Future<bool> _showUploadFailedDialog() async {
-    return await showDialog<bool>(
-          context: context,
-          builder: (_) => AlertDialog(
-            shape: RoundedRectangleBorder(
-              borderRadius: BorderRadius.circular(16),
-            ),
-            title: const Text('Video Upload Failed'),
-            content: const Text(
-              'The video could not be uploaded.\n\n'
-              'You can still submit the report without the video, '
-              'or cancel and try again.',
-            ),
-            actions: [
-              TextButton(
-                onPressed: () => Navigator.pop(context, false),
-                child: const Text('Cancel'),
-              ),
-              ElevatedButton(
-                style: ElevatedButton.styleFrom(
-                  backgroundColor: AppColors.primary,
-                ),
-                onPressed: () => Navigator.pop(context, true),
-                child: const Text(
-                  'Submit Anyway',
-                  style: TextStyle(color: Colors.white),
-                ),
-              ),
-            ],
-          ),
-        ) ??
-        false;
-  }
+  // Detail sections appear once the photo has a result, accepted or not.
+  bool get _showDetailSections => _aiResult != null;
 
-  // ─── Build ──────────────────────────────────────────────────────
+  // Incident details follow the same rule, severity stays read-only.
+  bool get _showIncidentDetailsSection => _showDetailSections;
+
+  // Description follows the same rule, the fallback only rewrites its label.
+  bool get _showDescriptionSection => _showDetailSections;
+
+  // Reporter info appears once a photo has been taken, it stays through the fallback.
+  bool get _showReporterSection => _photoPath != null;
 
   @override
   Widget build(BuildContext context) {
@@ -666,19 +788,33 @@ class _ReportScreenState extends State<ReportScreen> {
                   children: [
                     _buildLocationBanner(),
                     const SizedBox(height: 16),
-                    _buildVideoSection(),
-                    const SizedBox(height: 20),
-                    if (_aiResult != null) _buildAIResult(),
-                    const SizedBox(height: 20),
-                    _buildIncidentTypeSelector(),
-                    const SizedBox(height: 20),
-                    _buildDropdowns(),
-                    const SizedBox(height: 20),
-                    _buildReporterVerification(),
-                    const SizedBox(height: 20),
-                    _buildDescriptionField(),
-                    const SizedBox(height: 32),
-                    _buildSubmitButton(),
+                    _buildEvidenceSection(),
+                    if (!_isPreparingRecording && !_isRecording) ...[
+                      if (_aiResult != null) ...[
+                        const SizedBox(height: 20),
+                        _buildAIResult(),
+                      ],
+                      if (_showDetailSections) ...[
+                        const SizedBox(height: 20),
+                        _buildIncidentTypeSelector(),
+                      ],
+                      if (_showIncidentDetailsSection) ...[
+                        const SizedBox(height: 20),
+                        _buildDropdowns(),
+                      ],
+                      if (_showReporterSection) ...[
+                        const SizedBox(height: 20),
+                        _buildReporterVerification(),
+                      ],
+                      if (_showDescriptionSection) ...[
+                        const SizedBox(height: 20),
+                        _buildDescriptionField(),
+                      ],
+                      if (_videoReviewed) ...[
+                        const SizedBox(height: 32),
+                        _buildSubmitButton(),
+                      ],
+                    ],
                     const SizedBox(height: 40),
                   ],
                 ),
@@ -690,7 +826,7 @@ class _ReportScreenState extends State<ReportScreen> {
     );
   }
 
-  // ─── Widgets ────────────────────────────────────────────────────
+  // ─── Widgets ─────────────────────────────────────────────────────────────
 
   Widget _buildLocationBanner() {
     if (_fetchingLocation) {
@@ -729,7 +865,7 @@ class _ReportScreenState extends State<ReportScreen> {
           icon: Icons.location_on_rounded,
           color: AppColors.success,
           title: 'Location verified (real-time GPS)',
-          subtitle: '${result.displayPlace} — accuracy ${result.accuracyText}',
+          subtitle: '${result.displayPlace} - accuracy ${result.accuracyText}',
           trailing: const Icon(
             Icons.check_circle_rounded,
             color: AppColors.success,
@@ -831,7 +967,7 @@ class _ReportScreenState extends State<ReportScreen> {
                   ),
                 ),
                 Text(
-                  'Live video • 200km Region 1 coverage',
+                  'Quick photo capture, video backup if needed',
                   style: TextStyle(color: Colors.white70, fontSize: 13),
                 ),
               ],
@@ -843,11 +979,235 @@ class _ReportScreenState extends State<ReportScreen> {
               color: Colors.white.withValues(alpha: 0.2),
               borderRadius: BorderRadius.circular(12),
             ),
-            child: const Icon(Icons.videocam_rounded, color: Colors.white),
+            child: const Icon(Icons.camera_alt_rounded, color: Colors.white),
           ),
         ],
       ),
     );
+  }
+
+  // Photo stage shows the quick capture, video stage shows the recorder.
+  Widget _buildEvidenceSection() {
+    if (_evidenceStage == EvidenceStage.photo) {
+      return _buildPhotoSection();
+    }
+    return _buildVideoSection();
+  }
+
+  Widget _buildPhotoSection() {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Row(
+          children: [
+            const Text(
+              'Photo Evidence',
+              style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
+            ),
+            const SizedBox(width: 6),
+            Text('*', style: TextStyle(color: AppColors.error, fontSize: 16)),
+          ],
+        ),
+        const SizedBox(height: 12),
+        Center(
+          child: AspectRatio(
+            aspectRatio: 3 / 4,
+            child: Container(
+              decoration: BoxDecoration(
+                color: AppColors.grey100,
+                borderRadius: BorderRadius.circular(20),
+                border: Border.all(
+                  color: _photoPath != null
+                      ? AppColors.primary
+                      : AppColors.grey300,
+                  width: 2,
+                ),
+              ),
+              child: ClipRRect(
+                borderRadius: BorderRadius.circular(18),
+                child: _buildPhotoPreview(),
+              ),
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+
+  // Three states: live camera, taken photo waiting for Okay, or analyzed.
+  Widget _buildPhotoPreview() {
+    // Taken photo comes first, with Retry and Okay, AI has not run yet.
+    if (_photoPath != null && _photoPendingConfirm) {
+      return Stack(
+        fit: StackFit.expand,
+        children: [
+          Image.file(File(_photoPath!), fit: BoxFit.cover),
+          Positioned(
+            bottom: 12,
+            left: 0,
+            right: 0,
+            child: Row(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                ElevatedButton.icon(
+                  onPressed: _retryPhoto,
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: AppColors.grey700,
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(24),
+                    ),
+                  ),
+                  icon: const Icon(Icons.replay_rounded, color: Colors.white),
+                  label: const Text(
+                    'Retry',
+                    style: TextStyle(color: Colors.white),
+                  ),
+                ),
+                const SizedBox(width: 12),
+                ElevatedButton.icon(
+                  onPressed: _confirmPhoto,
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: AppColors.success,
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(24),
+                    ),
+                  ),
+                  icon: const Icon(Icons.check_rounded, color: Colors.white),
+                  label: const Text(
+                    'Okay',
+                    style: TextStyle(
+                      color: Colors.white,
+                      fontWeight: FontWeight.bold,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ],
+      );
+    }
+
+    // Analyzed photo, shown with its AI overlay.
+    if (_photoPath != null) {
+      return Stack(
+        fit: StackFit.expand,
+        children: [
+          Image.file(File(_photoPath!), fit: BoxFit.cover),
+          if (_analyzing)
+            Container(
+              color: Colors.black.withValues(alpha: 0.6),
+              child: const Center(
+                child: Column(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    CircularProgressIndicator(color: Colors.white),
+                    SizedBox(height: 16),
+                    Text(
+                      'AI Analyzing photo...',
+                      style: TextStyle(
+                        color: Colors.white,
+                        fontWeight: FontWeight.bold,
+                        fontSize: 16,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+        ],
+      );
+    }
+
+    // Live camera preview with the shutter, same as the video box.
+    if (_cameraController != null && _cameraController!.value.isInitialized) {
+      return Stack(
+        fit: StackFit.expand,
+        children: [
+          Center(
+            child: AspectRatio(
+              aspectRatio: 1 / _cameraController!.value.aspectRatio,
+              child: CameraPreview(_cameraController!),
+            ),
+          ),
+          Positioned(
+            bottom: 12,
+            left: 0,
+            right: 0,
+            child: Center(
+              child: ElevatedButton(
+                onPressed: _takePhoto,
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: Colors.white,
+                  shape: const CircleBorder(),
+                  padding: const EdgeInsets.all(6),
+                ),
+                child: Container(
+                  width: 62,
+                  height: 62,
+                  decoration: BoxDecoration(
+                    color: AppColors.primary,
+                    shape: BoxShape.circle,
+                    border: Border.all(color: Colors.white, width: 3),
+                  ),
+                  child: const Icon(
+                    Icons.camera_alt_rounded,
+                    color: Colors.white,
+                    size: 30,
+                  ),
+                ),
+              ),
+            ),
+          ),
+        ],
+      );
+    }
+
+    return Center(
+      child: Column(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          const CircularProgressIndicator(color: AppColors.primary),
+          const SizedBox(height: 16),
+          Text(
+            'Starting camera...',
+            style: TextStyle(color: AppColors.textSecondary, fontSize: 13),
+          ),
+        ],
+      ),
+    );
+  }
+
+  // Subtitle follows the flow: guidance, then the video score.
+  String _videoSubtitle() {
+    final photoAccepted = _photoResult != null && !_photoResult!.isRejected;
+
+    // Video not recorded yet, so show the guidance for this stage.
+    if (_videoPath == null) {
+      return photoAccepted
+          ? 'Photo accepted. Record a 5 to 10 second video as backup evidence.'
+          : 'The photo score is below 80% and not accepted. Record a 5 to 10 second video as backup evidence for further review.';
+    }
+
+    // Score is still being read, so do not guess the outcome.
+    if (_analyzing) return 'Scoring the video backup...';
+
+    // An accepted photo needs no second score, the video is upload only.
+    if (!_videoNeedsAI) {
+      return 'Video recorded. Both the photo and the video evidence will be submitted.';
+    }
+
+    final videoResult =
+        _aiResult?.stage == EvidenceStage.video ? _aiResult : null;
+    if (videoResult == null) {
+      return 'Video not scored yet. Record the video again to get a score.';
+    }
+    if (!videoResult.isRejected) {
+      return 'Video accepted at ${videoResult.confidenceLabel}. '
+          'Both the photo and the video evidence will be submitted.';
+    }
+    return 'Video is below 80% and not accepted. '
+        'Record another video, or keep this video, fill the information below and describe what is happening before submitting.';
   }
 
   Widget _buildVideoSection() {
@@ -857,7 +1217,7 @@ class _ReportScreenState extends State<ReportScreen> {
         Row(
           children: [
             const Text(
-              'Live Video Evidence',
+              'Video Backup Evidence',
               style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
             ),
             const SizedBox(width: 6),
@@ -866,12 +1226,10 @@ class _ReportScreenState extends State<ReportScreen> {
         ),
         const SizedBox(height: 4),
         Text(
-          'Point your phone camera at the incident and record. Only 5–10 second videos are accepted.',
+          _videoSubtitle(),
           style: TextStyle(color: AppColors.textSecondary, fontSize: 12),
         ),
         const SizedBox(height: 12),
-        // ✅ P3 REVISION: Tall portrait rectangle (9:16) like a phone video,
-        // instead of a square box.
         Center(
           child: AspectRatio(
             aspectRatio: 9 / 16,
@@ -880,7 +1238,9 @@ class _ReportScreenState extends State<ReportScreen> {
                 color: AppColors.grey100,
                 borderRadius: BorderRadius.circular(20),
                 border: Border.all(
-                  color: _videoPath != null ? AppColors.primary : AppColors.grey300,
+                  color: _videoPath != null
+                      ? AppColors.primary
+                      : AppColors.grey300,
                   width: 2,
                 ),
               ),
@@ -896,24 +1256,21 @@ class _ReportScreenState extends State<ReportScreen> {
   }
 
   Widget _buildVideoPreview() {
-    // ✅ P1 REVISION (video-only): after recording, show the RECORDED VIDEO
-    // inside a RepaintBoundary so the AI extracts a frame from the video.
-    if (_videoPath != null && _videoController != null &&
+    // After recording, show the recorded video inside the box.
+    if (_videoPath != null &&
+        _videoController != null &&
         _videoController!.value.isInitialized) {
       return Stack(
         fit: StackFit.expand,
         children: [
           ClipRRect(
             borderRadius: BorderRadius.circular(18),
-            child: RepaintBoundary(
-              key: _videoFrameKey,
-              child: FittedBox(
-                fit: BoxFit.cover,
-                child: SizedBox(
-                  width: _videoController!.value.size.width,
-                  height: _videoController!.value.size.height,
-                  child: VideoPlayer(_videoController!),
-                ),
+            child: FittedBox(
+              fit: BoxFit.cover,
+              child: SizedBox(
+                width: _videoController!.value.size.width,
+                height: _videoController!.value.size.height,
+                child: VideoPlayer(_videoController!),
               ),
             ),
           ),
@@ -967,7 +1324,11 @@ class _ReportScreenState extends State<ReportScreen> {
                       shape: const CircleBorder(),
                       padding: const EdgeInsets.all(14),
                     ),
-                    child: const Icon(Icons.replay_rounded, color: Colors.white, size: 24),
+                    child: const Icon(
+                      Icons.replay_rounded,
+                      color: Colors.white,
+                      size: 24,
+                    ),
                   ),
                 ],
               ),
@@ -977,18 +1338,13 @@ class _ReportScreenState extends State<ReportScreen> {
       );
     }
 
-    // ✅ P4 REVISION: Show the LIVE camera preview (CameraController +
-    // CameraPreview) BEFORE and DURING recording so the user can see what
-    // they are recording. No static placeholder while recording.
+    // Live camera preview before and during recording.
     if (_cameraController != null && _cameraController!.value.isInitialized) {
       return Stack(
         fit: StackFit.expand,
         children: [
           ClipRRect(
             borderRadius: BorderRadius.circular(18),
-            // ✅ P2 REVISION: Portrait orientation — invert the camera's
-            // aspect ratio so the live preview fills a tall portrait area
-            // (like a phone camera held vertically), not square/landscape.
             child: Center(
               child: AspectRatio(
                 aspectRatio: 1 / _cameraController!.value.aspectRatio,
@@ -997,89 +1353,101 @@ class _ReportScreenState extends State<ReportScreen> {
             ),
           ),
           if (_analyzing)
-          Container(
-            decoration: BoxDecoration(
-              color: Colors.black.withValues(alpha: 0.6),
-              borderRadius: BorderRadius.circular(18),
-            ),
-            child: const Center(
-              child: Column(
-                mainAxisAlignment: MainAxisAlignment.center,
-                children: [
-                  CircularProgressIndicator(color: Colors.white),
-                  SizedBox(height: 16),
-                  Text(
-                    'AI Analyzing...',
-                    style: TextStyle(
-                      color: Colors.white,
-                      fontWeight: FontWeight.bold,
-                      fontSize: 16,
-                    ),
-                  ),
-                ],
-              ),
-            ),
-          ),
-        // Recording indicator
-        if (_isRecording)
-          Positioned(
-            top: 12,
-            left: 12,
-            child: Container(
-              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+            Container(
               decoration: BoxDecoration(
-                color: Colors.red,
-                borderRadius: BorderRadius.circular(20),
+                color: Colors.black.withValues(alpha: 0.6),
+                borderRadius: BorderRadius.circular(18),
               ),
-              child: Row(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  const Icon(Icons.fiber_manual_record, color: Colors.white, size: 12),
-                  const SizedBox(width: 6),
-                  Text(
-                    'REC $_recordSeconds/10s',
-                    style: const TextStyle(
-                      color: Colors.white,
-                      fontSize: 12,
-                      fontWeight: FontWeight.bold,
+              child: const Center(
+                child: Column(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    CircularProgressIndicator(color: Colors.white),
+                    SizedBox(height: 16),
+                    Text(
+                      'AI Analyzing...',
+                      style: TextStyle(
+                        color: Colors.white,
+                        fontWeight: FontWeight.bold,
+                        fontSize: 16,
+                      ),
                     ),
-                  ),
-                ],
+                  ],
+                ),
               ),
             ),
-          ),
-        // Record / Stop button
-        Positioned(
-          bottom: 12,
-          left: 0,
-          right: 0,
-          child: Center(
-            child: _isRecording
-                ? ElevatedButton(
-                    onPressed: _stopRecording,
-                    style: ElevatedButton.styleFrom(
-                      backgroundColor: Colors.red,
-                      shape: const CircleBorder(),
-                      padding: const EdgeInsets.all(18),
+          if (_isRecording)
+            Positioned(
+              top: 12,
+              left: 12,
+              child: Container(
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 10,
+                  vertical: 6,
+                ),
+                decoration: BoxDecoration(
+                  color: Colors.red,
+                  borderRadius: BorderRadius.circular(20),
+                ),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    const Icon(
+                      Icons.fiber_manual_record,
+                      color: Colors.white,
+                      size: 12,
                     ),
-                    child: const Icon(Icons.stop_rounded, color: Colors.white, size: 28),
-                  )
-                : ElevatedButton(
-                    onPressed: _startRecording,
-                    style: ElevatedButton.styleFrom(
-                      backgroundColor: AppColors.primary,
-                      shape: const CircleBorder(),
-                      padding: const EdgeInsets.all(18),
+                    const SizedBox(width: 6),
+                    Text(
+                      'REC $_recordSeconds/10s',
+                      style: const TextStyle(
+                        color: Colors.white,
+                        fontSize: 12,
+                        fontWeight: FontWeight.bold,
+                      ),
                     ),
-                    child: const Icon(Icons.videocam_rounded, color: Colors.white, size: 28),
-                  ),
+                  ],
+                ),
+              ),
+            ),
+          Positioned(
+            bottom: 12,
+            left: 0,
+            right: 0,
+            child: Center(
+              child: _isRecording
+                  ? ElevatedButton(
+                      onPressed: _stopRecording,
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: Colors.red,
+                        shape: const CircleBorder(),
+                        padding: const EdgeInsets.all(18),
+                      ),
+                      child: const Icon(
+                        Icons.stop_rounded,
+                        color: Colors.white,
+                        size: 28,
+                      ),
+                    )
+                  : ElevatedButton(
+                      onPressed: _startRecording,
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: AppColors.primary,
+                        shape: const CircleBorder(),
+                        padding: const EdgeInsets.all(18),
+                      ),
+                      child: const Icon(
+                        Icons.videocam_rounded,
+                        color: Colors.white,
+                        size: 28,
+                      ),
+                    ),
+            ),
           ),
-        ),
-      ],
-    );
+        ],
+      );
     }
 
-    // No camera — show placeholder
     return Column(
       mainAxisAlignment: MainAxisAlignment.center,
       children: [
@@ -1102,14 +1470,13 @@ class _ReportScreenState extends State<ReportScreen> {
         ),
         const SizedBox(height: 8),
         Text(
-          'Live video is required to submit a report',
+          'A video backup is required to submit this report',
           style: TextStyle(color: AppColors.textSecondary, fontSize: 13),
         ),
       ],
     );
   }
 
-  // ✅ P1 REVISION: toggle play/pause of the recorded video
   void _toggleVideoPlayback() {
     final vc = _videoController;
     if (vc == null || !vc.value.isInitialized) return;
@@ -1124,14 +1491,15 @@ class _ReportScreenState extends State<ReportScreen> {
 
   Widget _buildAIResult() {
     final result = _aiResult!;
-    // ✅ P1 REVISION: Hazard reflects the selected severity so it updates
-    // automatically when the user changes the severity dropdown.
-    final severityColor = _selectedSeverity == 'High'
-        ? AppColors.error
-        : _selectedSeverity == 'Medium'
-        ? Colors.orange
-        : AppColors.success;
-    final confidenceColor = result.isRejected ? Colors.orange : AppColors.success;
+
+    // Mobile severity colours: Low grey, Medium orange, High red.
+    final bandColor = switch (result.band) {
+      SeverityBand.high => AppColors.error,
+      SeverityBand.medium => Colors.orange,
+      SeverityBand.low => AppColors.grey500,
+    };
+
+    final severityText = result.severityLabel.toUpperCase();
 
     return Container(
       padding: const EdgeInsets.all(16),
@@ -1157,17 +1525,20 @@ class _ReportScreenState extends State<ReportScreen> {
               ),
               const Spacer(),
               Text(
-                'Hazard: ',
+                'Severity: ',
                 style: TextStyle(fontSize: 12, color: AppColors.textSecondary),
               ),
               Container(
-                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 10,
+                  vertical: 4,
+                ),
                 decoration: BoxDecoration(
-                  color: severityColor,
+                  color: bandColor,
                   borderRadius: BorderRadius.circular(20),
                 ),
                 child: Text(
-                  _selectedSeverity,
+                  severityText,
                   style: const TextStyle(
                     color: Colors.white,
                     fontSize: 12,
@@ -1190,7 +1561,7 @@ class _ReportScreenState extends State<ReportScreen> {
                   child: LinearProgressIndicator(
                     value: result.confidence,
                     backgroundColor: AppColors.grey300,
-                    color: confidenceColor,
+                    color: bandColor,
                     minHeight: 6,
                   ),
                 ),
@@ -1201,7 +1572,7 @@ class _ReportScreenState extends State<ReportScreen> {
                 style: TextStyle(
                   fontSize: 12,
                   fontWeight: FontWeight.bold,
-                  color: confidenceColor,
+                  color: bandColor,
                 ),
               ),
             ],
@@ -1215,21 +1586,29 @@ class _ReportScreenState extends State<ReportScreen> {
               height: 1.5,
             ),
           ),
+          // Routed to follows the incident type, so it changes with the dropdown.
           const SizedBox(height: 10),
           Row(
             children: [
-              const Icon(Icons.assignment_rounded, color: AppColors.primary, size: 16),
+              const Icon(
+                Icons.assignment_rounded,
+                color: AppColors.primary,
+                size: 16,
+              ),
               const SizedBox(width: 6),
-              Text(
-                'Routed to: ${_departmentFor(_selectedType)}',
-                style: const TextStyle(
-                  fontWeight: FontWeight.bold,
-                  fontSize: 10,
-                  color: AppColors.primary,
+              Expanded(
+                child: Text(
+                  'Routed to: ${_departmentFor(_selectedType)}',
+                  style: const TextStyle(
+                    fontWeight: FontWeight.bold,
+                    fontSize: 11,
+                    color: AppColors.primary,
+                  ),
                 ),
               ),
             ],
           ),
+          const SizedBox(height: 10),
           if (result.isRejected) ...[
             const SizedBox(height: 12),
             Container(
@@ -1239,15 +1618,20 @@ class _ReportScreenState extends State<ReportScreen> {
                 borderRadius: BorderRadius.circular(10),
                 border: Border.all(color: Colors.orange.withValues(alpha: 0.4)),
               ),
-              child: const Row(
+              child: Row(
                 children: [
-                  Icon(Icons.warning_amber_rounded, color: Colors.orange, size: 16),
-                  SizedBox(width: 6),
+                  const Icon(
+                    Icons.warning_amber_rounded,
+                    color: Colors.orange,
+                    size: 16,
+                  ),
+                  const SizedBox(width: 6),
                   Expanded(
                     child: Text(
-                      'Report REJECTED — AI confidence below 80%. '
-                      'Record a clearer video.',
-                      style: TextStyle(
+                      result.stage == EvidenceStage.photo
+                          ? 'Photo below 80%. A video backup is required.'
+                          : 'Video backup still below 80%. Describe the incident below.',
+                      style: const TextStyle(
                         fontWeight: FontWeight.bold,
                         fontSize: 13,
                         color: Colors.orange,
@@ -1272,7 +1656,6 @@ class _ReportScreenState extends State<ReportScreen> {
           style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
         ),
         const SizedBox(height: 12),
-        // ✅ P1 REVISION: Dropdown menu instead of manual typing
         DropdownButtonFormField<String>(
           value: _selectedType,
           decoration: InputDecoration(
@@ -1290,9 +1673,7 @@ class _ReportScreenState extends State<ReportScreen> {
           onChanged: (val) => setState(() {
             if (val != null) {
               _selectedType = val;
-              // ✅ P2 REVISION: user manually changed the incident type —
-              // mark it as an override so the submitted report uses the
-              // user's choice and routes to the matching department.
+              // User changed the type, so mark it as an override.
               _aiOverriddenByUser = true;
             }
           }),
@@ -1310,7 +1691,6 @@ class _ReportScreenState extends State<ReportScreen> {
           style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
         ),
         const SizedBox(height: 12),
-        // Barangay dropdown
         DropdownButtonFormField<String>(
           value: _selectedBarangay,
           decoration: InputDecoration(
@@ -1330,30 +1710,75 @@ class _ReportScreenState extends State<ReportScreen> {
           }),
         ),
         const SizedBox(height: 12),
-        // Severity dropdown
-        DropdownButtonFormField<String>(
-          value: _selectedSeverity,
-          decoration: InputDecoration(
-            labelText: 'Severity *',
-            filled: true,
-            fillColor: AppColors.grey100,
-            border: OutlineInputBorder(
-              borderRadius: BorderRadius.circular(12),
-              borderSide: BorderSide.none,
-            ),
-          ),
-          items: _severities
-              .map((s) => DropdownMenuItem(value: s, child: Text(s)))
-              .toList(),
-          onChanged: (val) => setState(() {
-            if (val != null) _selectedSeverity = val;
-          }),
-        ),
+        // Severity is read-only in every state, it mirrors the AI band.
+        _buildReadOnlySeverity(),
       ],
     );
   }
 
-  // ✅ P1 REVISION: Reporter Verification — name + phone from the user's profile
+  // Read-only severity box, it always shows the AI band.
+  Widget _buildReadOnlySeverity() {
+    final label = _aiResult?.severityLabel ?? _selectedSeverity;
+    final color = switch (_aiResult?.band) {
+      SeverityBand.high => AppColors.error,
+      SeverityBand.medium => Colors.orange,
+      SeverityBand.low => AppColors.grey500,
+      null => AppColors.grey500,
+    };
+
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+      decoration: BoxDecoration(
+        color: AppColors.grey100,
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: AppColors.grey300),
+      ),
+      child: Row(
+        children: [
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  'Severity (set by AI)',
+                  style: TextStyle(
+                    fontSize: 11,
+                    color: AppColors.textSecondary,
+                  ),
+                ),
+                const SizedBox(height: 4),
+                Text(
+                  label,
+                  style: const TextStyle(
+                    fontSize: 15,
+                    fontWeight: FontWeight.bold,
+                    color: AppColors.textPrimary,
+                  ),
+                ),
+              ],
+            ),
+          ),
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+            decoration: BoxDecoration(
+              color: color,
+              borderRadius: BorderRadius.circular(20),
+            ),
+            child: Text(
+              label.toUpperCase(),
+              style: const TextStyle(
+                color: Colors.white,
+                fontSize: 11,
+                fontWeight: FontWeight.bold,
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
   Widget _buildReporterVerification() {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -1383,7 +1808,9 @@ class _ReportScreenState extends State<ReportScreen> {
                   ),
                   const SizedBox(width: 8),
                   Text(
-                    _reporterName.isEmpty ? 'Loading reporter...' : _reporterName,
+                    _reporterName.isEmpty
+                        ? 'Loading reporter...'
+                        : _reporterName,
                     style: const TextStyle(
                       fontSize: 14,
                       fontWeight: FontWeight.w600,
@@ -1429,13 +1856,19 @@ class _ReportScreenState extends State<ReportScreen> {
             Container(
               padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
               decoration: BoxDecoration(
-                color: AppColors.primary.withValues(alpha: 0.1),
+                color: _scoreRejected
+                    ? AppColors.error.withValues(alpha: 0.1)
+                    : AppColors.primary.withValues(alpha: 0.1),
                 borderRadius: BorderRadius.circular(8),
               ),
-              child: const Text(
-                'AI suggested — please review and edit',
+              child: Text(
+                _scoreRejected
+                    ? 'Required, describe it yourself'
+                    : 'AI suggested, please review and edit',
                 style: TextStyle(
-                  color: AppColors.primary,
+                  color: _scoreRejected
+                      ? AppColors.error
+                      : AppColors.primary,
                   fontSize: 11,
                   fontWeight: FontWeight.w600,
                 ),
@@ -1443,6 +1876,41 @@ class _ReportScreenState extends State<ReportScreen> {
             ),
           ],
         ),
+        if (_scoreRejected) ...[
+          const SizedBox(height: 12),
+          Container(
+            padding: const EdgeInsets.all(12),
+            decoration: BoxDecoration(
+              color: AppColors.error.withValues(alpha: 0.08),
+              borderRadius: BorderRadius.circular(12),
+              border: Border.all(
+                color: AppColors.error.withValues(alpha: 0.3),
+              ),
+            ),
+            child: Row(
+              children: [
+                const Icon(
+                  Icons.edit_note_rounded,
+                  color: AppColors.error,
+                  size: 20,
+                ),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: Text(
+                    'The photo scored below 80%. Please describe the incident '
+                    'in your own words so responders can still act on it. '
+                    'This report is marked LOW severity.',
+                    style: TextStyle(
+                      color: AppColors.textSecondary,
+                      fontSize: 12,
+                      height: 1.4,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ],
         const SizedBox(height: 12),
         TextFormField(
           controller: _descriptionController,
@@ -1451,7 +1919,7 @@ class _ReportScreenState extends State<ReportScreen> {
           validator: _validateDescription,
           decoration: InputDecoration(
             hintText:
-                'Describe what is happening... AI may suggest a description after video analysis.',
+                'Describe what is happening... AI may suggest a description after analysis.',
             filled: true,
             fillColor: AppColors.grey100,
             border: OutlineInputBorder(
@@ -1493,12 +1961,14 @@ class _ReportScreenState extends State<ReportScreen> {
 
   Widget _buildSubmitButton() {
     final locationOk = _locationResult != null && _locationResult!.isInDagupan;
-    final aiOk = _aiResult != null && !_aiResult!.isRejected;
+    // A video still below 80% submits with the typed description.
+    final aiOk = _aiResult != null;
+    final canSubmit = locationOk && aiOk && !_submitting;
 
     return SizedBox(
       width: double.infinity,
       child: ElevatedButton(
-        onPressed: (_submitting || !locationOk || !aiOk) ? null : _submitReport,
+        onPressed: canSubmit ? _submitReport : null,
         style: ElevatedButton.styleFrom(
           backgroundColor: AppColors.primary,
           disabledBackgroundColor: AppColors.grey300,
@@ -1532,19 +2002,21 @@ class _ReportScreenState extends State<ReportScreen> {
                 children: [
                   Icon(
                     Icons.send_rounded,
-                    color: locationOk && aiOk ? Colors.white : AppColors.grey500,
+                    color: canSubmit ? Colors.white : AppColors.grey500,
                   ),
                   const SizedBox(width: 8),
                   Text(
                     !locationOk
                         ? 'Location required to submit'
-                        : !aiOk
-                            ? 'AI confidence must be 80%+'
-                            : 'Submit Report',
+                        : _aiResult == null
+                        ? 'Capture a photo first'
+                        : _scoreRejected
+                        ? 'Submit with my description'
+                        : 'Submit Report',
                     style: TextStyle(
                       fontSize: 16,
                       fontWeight: FontWeight.bold,
-                      color: locationOk && aiOk ? Colors.white : AppColors.grey500,
+                      color: canSubmit ? Colors.white : AppColors.grey500,
                     ),
                   ),
                 ],

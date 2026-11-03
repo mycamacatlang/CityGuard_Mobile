@@ -1,0 +1,14 @@
+
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "CityGuard (Presentation)",
+      "request": "launch",
+      "type": "dart",
+      "toolArgs": [
+        "--android-skip-build-dependency-validation"
+      ]
+    }
+  ]
+}

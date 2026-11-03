@@ -4,70 +4,105 @@ import 'package:flutter/services.dart';
 import 'package:image/image.dart' as img;
 import 'package:tflite_flutter/tflite_flutter.dart';
 
-//  Structured result with confidence — enables override UI in report_screen
+// Mobile severity band. Web adds Critical and repeat reports later.
+enum SeverityBand { low, medium, high }
+
+// Which evidence the user is on: photo first, video only as backup.
+enum EvidenceStage { photo, video }
+
+// Structured result with confidence, severity band and escalation stage.
 class AIClassificationResult {
   final String category;
   final double confidence;
 
-  // ✅ P1 REVISION: AI confidence threshold raised to 80% (0.80)
-  // Reports below 80% are REJECTED (not accepted with manual override).
+  // Stage this result came from, so the screen knows what to ask for next.
+  final EvidenceStage stage;
+
+  // 80% is the lowest score that can be accepted at all.
   static const double acceptThreshold = 0.80;
 
-  // ✅ P1 REVISION: true when confidence is below 80% → report is rejected
+  // 90% and above is treated as high.
+  static const double highThreshold = 0.90;
+
+  const AIClassificationResult({
+    required this.category,
+    required this.confidence,
+    this.stage = EvidenceStage.photo,
+  });
+
+  // Percentage as a whole number, used in every message.
+  int get percent => (confidence * 100).round();
+
+  // Below 80% is rejected and needs a video backup.
   bool get isRejected => confidence < acceptThreshold;
 
-  // Human-readable confidence label
-  String get confidenceLabel => '${(confidence * 100).toStringAsFixed(0)}%';
+  // 80 to 89 percent.
+  bool get isMedium =>
+      confidence >= acceptThreshold && confidence < highThreshold;
 
-  // ✅ P1 REVISION: AI auto-routes to the correct response department
+  // 90 percent and above.
+  bool get isHigh => confidence >= highThreshold;
+
+  // Mobile rule: below 80 LOW, 80-89 MEDIUM, 90-100 HIGH.
+  SeverityBand get band {
+    if (isHigh) return SeverityBand.high;
+    if (isMedium) return SeverityBand.medium;
+    return SeverityBand.low;
+  }
+
+  // Severity word stored with the report.
+  String get severityLabel {
+    switch (band) {
+      case SeverityBand.high:
+        return 'High';
+      case SeverityBand.medium:
+        return 'Medium';
+      case SeverityBand.low:
+        return 'Low';
+    }
+  }
+
+  // Short label for the confidence chip.
+  String get confidenceLabel => '$percent%';
+
+  // AI auto-routes to the correct response department.
   String get department {
     switch (category) {
       case 'Fire':
         return 'BFP';
       case 'Flood':
-        return 'CDRRMO/MDRRMOA';
+        return 'CDRRMO/MDRRMO';
       case 'Accident':
       case 'Medical Emergency':
         return 'Medical Emergency Team and Responders';
       case 'Crime':
         return 'PNP';
       default:
-        return 'CDRRMO/MDRRMOA';
+        return 'CDRRMO/MDRRMO';
     }
   }
 
-  // Severity derived from category
-  String get severity {
-    switch (category) {
-      case 'Fire':
-      case 'Flood':
-      case 'Accident':
-      case 'Medical':
-      case 'Crime':
-      case 'Drowning':
-      case 'Earthquake':
-      case 'Typhoon':
-        return 'High';
-      default:
-        return 'Medium';
-    }
-  }
-
-  // Description shown to user
+  // Message shown under the AI card, changes with the stage.
   String get description {
     if (isRejected) {
-      return 'AI confidence is only $confidenceLabel (below the 80% '
-          'acceptance threshold). This report cannot be submitted. '
-          'Please record a clearer video of the incident.';
+      if (stage == EvidenceStage.photo) {
+        return 'AI confidence is only $confidenceLabel, below the 80% '
+            'acceptance threshold. A video backup is now required.';
+      }
+      return 'AI confidence is still only $confidenceLabel after the video '
+          'backup. This report is marked LOW severity, so please describe the '
+          'incident in your own words before submitting.';
     }
     return 'AI detected: $category ($confidenceLabel). '
         'Routed to: $department. Please verify before submitting.';
   }
 
-  const AIClassificationResult({
-    required this.category,
-    required this.confidence,
-  });
+  // Copy of this result moved to the video stage.
+  AIClassificationResult asVideoStage() => AIClassificationResult(
+    category: category,
+    confidence: confidence,
+    stage: EvidenceStage.video,
+  );
 }
 
 class EmergencyAIService {
@@ -77,7 +112,7 @@ class EmergencyAIService {
   Interpreter? _interpreter;
   List<String> _labels = [];
 
-  // ✅ P1 REVISION: Only 5 categories (FINAL) — Others removed
+  // Only 5 categories, Others removed.
   static const List<String> validCategories = [
     'Fire',
     'Flood',
@@ -104,8 +139,11 @@ class EmergencyAIService {
     );
   }
 
-  // Returns structured AIClassificationResult instead of raw map
-  Future<AIClassificationResult> classifyImage(String path) async {
+  // Returns a structured result instead of a raw map.
+  Future<AIClassificationResult> classifyImage(
+    String path, {
+    EvidenceStage stage = EvidenceStage.photo,
+  }) async {
     await init();
 
     final interpreter = _interpreter!;
@@ -119,7 +157,11 @@ class EmergencyAIService {
     final Uint8List bytes = await File(path).readAsBytes();
     final decoded = img.decodeImage(bytes);
     if (decoded == null) {
-      return const AIClassificationResult(category: 'Flood', confidence: 0.0);
+      return AIClassificationResult(
+        category: 'Flood',
+        confidence: 0.0,
+        stage: stage,
+      );
     }
 
     final resized = img.copyResize(decoded, width: width, height: height);
@@ -165,32 +207,39 @@ class EmergencyAIService {
 
     String rawLabel = bestIdx < _labels.length ? _labels[bestIdx] : 'Flood';
 
-    // ✅ P1 REVISION: Normalize label to a known valid category.
-    // If the model returns an unknown label, map it to a specific category
-    // (never "Others").
+    // Normalize an unknown model label to one of the 5 categories.
     if (!validCategories.contains(rawLabel)) {
       rawLabel = _mapUnknownLabel(rawLabel);
     }
 
-    return AIClassificationResult(category: rawLabel, confidence: bestVal);
+    return AIClassificationResult(
+      category: rawLabel,
+      confidence: bestVal,
+      stage: stage,
+    );
   }
 
-  // ✅ P1 REVISION: Map unknown model labels to one of the 5 categories.
+  // Maps unknown model labels to one of the 5 categories.
   String _mapUnknownLabel(String raw) {
     final lower = raw.toLowerCase();
     if (lower.contains('fire') || lower.contains('burn')) return 'Fire';
     if (lower.contains('flood') || lower.contains('water')) return 'Flood';
     if (lower.contains('accident') || lower.contains('crash')) return 'Accident';
-    if (lower.contains('crime') || lower.contains('rob') || lower.contains('theft')) {
+    if (lower.contains('crime') ||
+        lower.contains('rob') ||
+        lower.contains('theft')) {
       return 'Crime';
     }
-    if (lower.contains('medical') || lower.contains('ambulance') || lower.contains('heart') || lower.contains('drown')) {
+    if (lower.contains('medical') ||
+        lower.contains('ambulance') ||
+        lower.contains('heart') ||
+        lower.contains('drown')) {
       return 'Medical Emergency';
     }
-    return 'Flood'; // default specific category — never "Others"
+    return 'Flood';
   }
 
-  // Legacy method kept for backward compat — delegates to classifyImage
+  // Legacy method kept for backward compat, delegates to classifyImage.
   Future<Map<String, dynamic>> classifyImageFile(String path) async {
     final result = await classifyImage(path);
     return {'label': result.category, 'confidence': result.confidence};

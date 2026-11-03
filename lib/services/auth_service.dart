@@ -227,9 +227,10 @@ class AuthService {
       throw Exception('Validation: description must be at least 20 characters');
     }
 
-    // ✅ P1 REVISION: AI confidence gate — only accept 80–100%
+    // AI confidence gate, the manual fallback is still allowed through.
     final aiConfidence = data['aiConfidence'];
-    if (aiConfidence is double && aiConfidence < 0.80) {
+    final manuallyDescribed = data['manuallyDescribed'] == true;
+    if (aiConfidence is double && aiConfidence < 0.80 && !manuallyDescribed) {
       throw Exception(
         'Validation: AI confidence is below 80%. Report rejected.',
       );
@@ -257,19 +258,27 @@ class AuthService {
       };
     }
 
-    // ✅ P1 REVISION (video-only): Live video URL is the PRIMARY evidence.
-    // No photo is ever captured or stored — imageUrl/imageUploaded are kept
-    // only for backward compatibility with the original Firebase structure
-    // and point to the video URL (never a photo).
-    final videoUrl = data['videoUrl']?.toString();
+    // Both evidence URLs come from the screen after the Cloudinary upload.
+    final rawVideoUrl = data['videoUrl']?.toString();
+    final rawPhotoUrl = data['photoUrl']?.toString();
+    // Photo and video stay separate, each one is rendered on its own.
+    final videoUrl =
+        (rawVideoUrl != null && rawVideoUrl.isNotEmpty) ? rawVideoUrl : null;
+    final imageUrl =
+        (rawPhotoUrl != null && rawPhotoUrl.isNotEmpty) ? rawPhotoUrl : null;
     final timestamp = _now();
 
-    // ✅ P1 REVISION: Capture reporter identity + phone for verification
+    // Reporter identity comes from the screen, profile fetch is the fallback.
     final profile = await getProfile(user.uid);
-    final reporterName = profile != null
+    final profileName = profile != null
         ? '${profile['firstName'] ?? ''} ${profile['lastName'] ?? ''}'.trim()
         : '';
-    final reporterPhone = profile?['contactNumber']?.toString() ?? '';
+    final passedName = data['reporterName']?.toString().trim() ?? '';
+    final passedPhone = data['reporterPhone']?.toString().trim() ?? '';
+    final reporterName = passedName.isNotEmpty ? passedName : profileName;
+    final reporterPhone = passedPhone.isNotEmpty
+        ? passedPhone
+        : (profile?['contactNumber']?.toString() ?? '');
 
     final safeData = {
       'userId': user.uid, // Always from auth token
@@ -280,14 +289,16 @@ class AuthService {
           ? aiConfidence.clamp(0.0, 1.0)
           : null,
       'aiOverriddenByUser': data['aiOverriddenByUser'] == true,
-      'videoUrl': videoUrl, // ✅ P1: live video URL
-      'imageUrl': videoUrl, // kept for backward compat with web viewer
-      'imageUploaded': videoUrl != null,
-      'location': safeLocation, // Structured map with lat/lng
+      'manuallyDescribed': manuallyDescribed,
+      'videoUrl': videoUrl, // video backup URL, null when no video was taken
+      'imageUrl': imageUrl, // photo URL only, never the video URL
+      'imageUploaded': imageUrl != null,
+      'location': safeLocation, // Structured map with lat/lng only
       'status': 'pending',
       'createdAt': timestamp,
-      'reporterName': reporterName, // ✅ P1: reporter identity
-      'reporterPhone': reporterPhone, // ✅ P1: reporter phone
+      // Reporter identity stays top level, never inside location.
+      'reporterName': reporterName,
+      'reporterPhone': reporterPhone,
       'assignedDepartment': sanitize(data['assignedDepartment']),
       'barangay': sanitize(data['barangay']),
       'severity': sanitize(data['severity']),

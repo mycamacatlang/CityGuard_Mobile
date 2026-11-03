@@ -496,7 +496,7 @@ class _LoginScreenState extends State<LoginScreen> {
   }
 
   Widget _buildSocialButton({
-    required IconData icon,
+    required FaIconData icon,
     required Color color,
     required VoidCallback onTap,
   }) {
