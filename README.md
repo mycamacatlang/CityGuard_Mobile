@@ -21,3 +21,8 @@ The project concludes that CityGuard provides a viable solution for improving
 Dagupan City's emergency response infrastructure, supporting SDG 11: Sustainable
 Cities and Communities by enhancing public safety, disaster resilience, and community
 trust in emergency reporting systems.
+
+CITYGUARD MOBILE ACCOUNT
+email: sashivana2@gmail.com
+username: mycamac
+password: Myca12345678
