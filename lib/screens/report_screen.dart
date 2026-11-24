@@ -85,6 +85,7 @@ class _ReportScreenState extends State<ReportScreen> {
     'Medical Emergency',
     'Accident',
     'Crime',
+    'Terrorist',
   ];
 
   final List<String> _barangays = [
@@ -110,6 +111,9 @@ class _ReportScreenState extends State<ReportScreen> {
         return 'Medical Emergency Team and Responders';
       case 'Crime':
         return 'PNP';
+      // Terrorist needs both police and medical response at once.
+      case 'Terrorist':
+        return 'PNP and Medical Emergency Team and Responders';
       default:
         return 'CDRRMO/MDRRMO';
     }
